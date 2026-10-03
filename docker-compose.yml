@@ -1,0 +1,85 @@
+name: transfermarkt-bronze
+
+services:
+  postgres:
+    image: postgres:16.10
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kestra}
+      POSTGRES_USER: ${POSTGRES_USER:-kestra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  kestra:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: transfermarkt-kestra:2.0.4-python
+    restart: unless-stopped
+    user: root
+    command: server standalone --worker-thread=8
+    stop_grace_period: 6m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${KESTRA_PORT:-8080}:8080"
+    volumes:
+      - kestra-data:/app/storage
+      - kestra-work:/tmp/kestra-wd
+      - ./kestra/flows:/opt/transfermarkt/flows:ro
+    environment:
+      KESTRA_BASIC_AUTH_USERNAME: ${KESTRA_USERNAME:?Set KESTRA_USERNAME in .env}
+      KESTRA_BASIC_AUTH_PASSWORD: ${KESTRA_PASSWORD:?Set KESTRA_PASSWORD in .env}
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-FOOTBALL}
+      SNOWFLAKE_BRONZE_SCHEMA: ${SNOWFLAKE_BRONZE_SCHEMA:-BRONZE}
+      SNOWFLAKE_AUTH_METHOD: ${SNOWFLAKE_AUTH_METHOD:-password}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      KESTRA_CONFIGURATION: |
+        datasources:
+          postgres:
+            url: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-kestra}
+            driverClassName: org.postgresql.Driver
+            username: ${POSTGRES_USER:-kestra}
+            password: ${POSTGRES_PASSWORD}
+        kestra:
+          server:
+            basic-auth:
+              username: ${KESTRA_USERNAME}
+              password: ${KESTRA_PASSWORD}
+          repository:
+            type: postgres
+          queue:
+            type: postgres
+          storage:
+            type: local
+            local:
+              base-path: /app/storage
+          tasks:
+            tmp-dir:
+              path: /tmp/kestra-wd/tmp
+          url: http://localhost:8080/
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8081/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  postgres-data:
+  kestra-data:
+  kestra-work:
+

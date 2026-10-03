@@ -1,0 +1,124 @@
+id: transfermarkt_ingest_bronze
+namespace: football.transfermarkt
+description: Coordinate complete Transfermarkt snapshots and publish an audited Bronze batch.
+
+inputs:
+  - id: assets
+    type: ARRAY
+    itemType: STRING
+    defaults:
+      - competitions
+      - clubs
+      - players
+      - games
+      - appearances
+      - player_valuations
+      - transfers
+      - club_games
+      - game_events
+      - game_lineups
+      - countries
+      - national_teams
+  - id: mode
+    type: SELECT
+    defaults: incremental
+    values: [incremental, backfill]
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+tasks:
+  - id: snowflake_preflight
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Validate password authentication with SELECT 1 and create or verify Bronze objects.
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    commands:
+      - >-
+        /opt/transfermarkt/.venv/bin/python -m ingestion.cli
+        --config /opt/transfermarkt/config/assets.yml check
+    timeout: PT5M
+
+  - id: start_batch
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    env:
+      TM_BATCH_ID: "{{ execution.id }}"
+      TM_MODE: "{{ inputs.mode }}"
+      TM_ASSETS: '{{ inputs.assets | toJson }}'
+    commands:
+      - >-
+        /opt/transfermarkt/.venv/bin/python -m ingestion.cli
+        --config /opt/transfermarkt/config/assets.yml batch-start
+        --batch-id "$TM_BATCH_ID" --mode "$TM_MODE" --assets "$TM_ASSETS"
+
+  - id: ingest_assets
+    type: io.kestra.plugin.core.flow.Loop
+    values: "{{ inputs.assets }}"
+    concurrencyLimit: 3
+    tasks:
+      - id: ingest_asset
+        type: io.kestra.plugin.core.flow.Subflow
+        namespace: football.transfermarkt
+        flowId: transfermarkt_ingest_asset
+        wait: true
+        transmitFailed: false
+        inputs:
+          asset: "{{ item.value }}"
+          batch_id: "{{ execution.id }}"
+          mode: "{{ inputs.mode }}"
+
+  - id: finalize
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    env:
+      TM_BATCH_ID: "{{ execution.id }}"
+      TM_ASSETS: '{{ inputs.assets | toJson }}'
+    outputFiles:
+      - summary.json
+    commands:
+      - >-
+        /opt/transfermarkt/.venv/bin/python -m ingestion.cli
+        --config /opt/transfermarkt/config/assets.yml batch-finish
+        --batch-id "$TM_BATCH_ID" --assets "$TM_ASSETS"
+        --output summary.json --no-fail
+
+  - id: fail_incomplete_batch
+    type: io.kestra.plugin.core.execution.Fail
+    condition: '{{ outputs.finalize.vars.status == "FAILED" }}'
+    errorMessage: One or more required Transfermarkt assets failed; see the batch summary.
+
+outputs:
+  - id: batch_id
+    type: STRING
+    value: "{{ execution.id }}"
+  - id: status
+    type: STRING
+    value: '{{ outputs.finalize.vars.status ??? "NOT_FINALIZED" }}'
+  - id: loaded
+    type: ARRAY
+    value: "{{ outputs.finalize.vars.loaded ??? [] }}"
+  - id: skipped
+    type: ARRAY
+    value: "{{ outputs.finalize.vars.skipped ??? [] }}"
+  - id: failed
+    type: ARRAY
+    value: "{{ outputs.finalize.vars.failed ??? [] }}"
+  - id: rows_read
+    type: INT
+    value: "{{ outputs.finalize.vars.rows_read ??? 0 }}"
+  - id: rows_loaded
+    type: INT
+    value: "{{ outputs.finalize.vars.rows_loaded ??? 0 }}"
+triggers:
+  - id: weekly_monday
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 3 * * 1"
+    timezone: America/Guayaquil
+    disabled: true
+    inputs:
+      mode: incremental
+

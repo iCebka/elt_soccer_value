@@ -21,3 +21,26 @@ rad.json
 *.flf
 #Test results file
 TestResults.xml
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+# Defense in depth for credential files accidentally copied into the workspace.
+*.p8
+*.pem
+*.key
+
+# Python/test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+htmlcov/
+.coverage
+
+# Ingestion work files
+*.csv.gz
+*.ndjson
+tmp/
+work/

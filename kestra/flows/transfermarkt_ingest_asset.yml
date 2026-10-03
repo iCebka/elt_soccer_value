@@ -1,0 +1,50 @@
+id: transfermarkt_ingest_asset
+namespace: football.transfermarkt
+description: Download, archive, and atomically publish one Transfermarkt snapshot to Bronze.
+
+inputs:
+  - id: asset
+    type: STRING
+  - id: batch_id
+    type: STRING
+  - id: mode
+    type: SELECT
+    defaults: incremental
+    values: [incremental, backfill]
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+tasks:
+  - id: ingest
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    env:
+      TM_ASSET: "{{ inputs.asset }}"
+      TM_BATCH_ID: "{{ inputs.batch_id }}"
+      TM_MODE: "{{ inputs.mode }}"
+      TM_RUN_ID: "{{ execution.id }}"
+    commands:
+      - >-
+        /opt/transfermarkt/.venv/bin/python -m ingestion.cli
+        --config /opt/transfermarkt/config/assets.yml
+        ingest --asset "$TM_ASSET" --batch-id "$TM_BATCH_ID"
+        --mode "$TM_MODE" --run-id "$TM_RUN_ID"
+    timeout: PT6H
+
+outputs:
+  - id: asset
+    type: STRING
+    value: "{{ inputs.asset }}"
+  - id: status
+    type: STRING
+    value: '{{ outputs.ingest.vars.status ??? "FAILED" }}'
+  - id: rows_read
+    type: INT
+    value: "{{ outputs.ingest.vars.rows_read ??? 0 }}"
+  - id: rows_loaded
+    type: INT
+    value: "{{ outputs.ingest.vars.rows_loaded ??? 0 }}"
+
