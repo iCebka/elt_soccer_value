@@ -1,0 +1,24 @@
+elt_soccer_value:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev: &snowflake_password
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      authenticator: snowflake
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'FOOTBALL') }}"
+      schema: "{{ env_var('DBT_DEV_SCHEMA', 'DBT_DEV') }}"
+      threads: 4
+      client_session_keep_alive: false
+      query_tag: elt_soccer_value_dbt_dev
+    prod:
+      <<: *snowflake_password
+      schema: "{{ env_var('SNOWFLAKE_SILVER_SCHEMA', 'SILVER') }}"
+      query_tag: elt_soccer_value_dbt_prod
+    test:
+      <<: *snowflake_password
+      schema: "{{ env_var('DBT_TEST_SCHEMA', 'DBT_TEST') }}"
+      query_tag: elt_soccer_value_dbt_test

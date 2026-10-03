@@ -96,6 +96,18 @@ tasks:
     condition: '{{ outputs.finalize.vars.status == "FAILED" }}'
     errorMessage: One or more required Transfermarkt assets failed; see the batch summary.
 
+  - id: run_silver
+    type: io.kestra.plugin.core.flow.Subflow
+    description: Evaluate pending Silver work after every successful Bronze check, including no-change checks.
+    namespace: football.transfermarkt
+    flowId: transfermarkt_silver
+    wait: true
+    transmitFailed: true
+    inputs:
+      force: false
+      mode: normal
+      bronze_batch_id: "{{ execution.id }}"
+
 outputs:
   - id: batch_id
     type: STRING

@@ -36,6 +36,10 @@ services:
       - kestra-data:/app/storage
       - kestra-work:/tmp/kestra-wd
       - ./kestra/flows:/opt/transfermarkt/flows:ro
+      - ./dbt:/opt/transfermarkt/dbt:ro
+      # Required only by the installed io.kestra.plugin.docker.cli.Run task.
+      # The Kestra container is therefore trusted as a Docker-daemon operator.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       KESTRA_BASIC_AUTH_USERNAME: ${KESTRA_USERNAME:?Set KESTRA_USERNAME in .env}
       KESTRA_BASIC_AUTH_PASSWORD: ${KESTRA_PASSWORD:?Set KESTRA_PASSWORD in .env}
@@ -47,6 +51,28 @@ services:
       SNOWFLAKE_BRONZE_SCHEMA: ${SNOWFLAKE_BRONZE_SCHEMA:-BRONZE}
       SNOWFLAKE_AUTH_METHOD: ${SNOWFLAKE_AUTH_METHOD:-password}
       SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      SNOWFLAKE_STAGING_SCHEMA: ${SNOWFLAKE_STAGING_SCHEMA:-STAGING}
+      SNOWFLAKE_SILVER_SCHEMA: ${SNOWFLAKE_SILVER_SCHEMA:-SILVER}
+      DBT_TARGET: ${DBT_TARGET:-dev}
+      DBT_DEV_SCHEMA: ${DBT_DEV_SCHEMA:-DBT_DEV}
+      DBT_TEST_SCHEMA: ${DBT_TEST_SCHEMA:-DBT_TEST}
+      DBT_IMAGE: ${DBT_IMAGE:-transfermarkt-dbt:1.12.5-snowflake-1.12.1}
+      # Kestra exposes only ENV_* variables through the `envs` Pebble namespace.
+      # Keep the original names above for Process tasks and these aliases for
+      # explicit injection into the isolated dbt container.
+      ENV_DBT_IMAGE: ${DBT_IMAGE:-transfermarkt-dbt:1.12.5-snowflake-1.12.1}
+      ENV_SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      ENV_SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      ENV_SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      ENV_SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+      ENV_SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-}
+      ENV_SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-FOOTBALL}
+      ENV_SNOWFLAKE_BRONZE_SCHEMA: ${SNOWFLAKE_BRONZE_SCHEMA:-BRONZE}
+      ENV_SNOWFLAKE_AUTH_METHOD: ${SNOWFLAKE_AUTH_METHOD:-password}
+      ENV_SNOWFLAKE_STAGING_SCHEMA: ${SNOWFLAKE_STAGING_SCHEMA:-STAGING}
+      ENV_SNOWFLAKE_SILVER_SCHEMA: ${SNOWFLAKE_SILVER_SCHEMA:-SILVER}
+      ENV_DBT_DEV_SCHEMA: ${DBT_DEV_SCHEMA:-DBT_DEV}
+      ENV_DBT_TEST_SCHEMA: ${DBT_TEST_SCHEMA:-DBT_TEST}
       KESTRA_CONFIGURATION: |
         datasources:
           postgres:
@@ -82,6 +108,31 @@ services:
       timeout: 5s
       retries: 20
       start_period: 60s
+
+  dbt:
+    profiles: ["silver"]
+    build:
+      context: .
+      dockerfile: docker/dbt/Dockerfile
+    image: transfermarkt-dbt:1.12.5-snowflake-1.12.1
+    working_dir: /usr/app/dbt
+    volumes:
+      - ./dbt:/usr/app/dbt:ro
+    environment:
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-FOOTBALL}
+      SNOWFLAKE_BRONZE_SCHEMA: ${SNOWFLAKE_BRONZE_SCHEMA:-BRONZE}
+      SNOWFLAKE_AUTH_METHOD: ${SNOWFLAKE_AUTH_METHOD:-password}
+      SNOWFLAKE_STAGING_SCHEMA: ${SNOWFLAKE_STAGING_SCHEMA:-STAGING}
+      SNOWFLAKE_SILVER_SCHEMA: ${SNOWFLAKE_SILVER_SCHEMA:-SILVER}
+      DBT_TARGET: ${DBT_TARGET:-dev}
+      DBT_DEV_SCHEMA: ${DBT_DEV_SCHEMA:-DBT_DEV}
+      DBT_TEST_SCHEMA: ${DBT_TEST_SCHEMA:-DBT_TEST}
+    command: ["parse", "--no-version-check"]
 
 volumes:
   postgres-data:

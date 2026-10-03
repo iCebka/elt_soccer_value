@@ -1,0 +1,163 @@
+id: transfermarkt_silver
+namespace: football.transfermarkt
+description: Build and validate the four Transfermarkt Silver products from one fixed Bronze manifest.
+
+inputs:
+  - id: force
+    type: BOOL
+    defaults: false
+  - id: mode
+    type: SELECT
+    defaults: normal
+    values: [normal, backfill]
+  - id: target
+    type: STRING
+    defaults: ""
+    description: Empty uses DBT_TARGET from the Kestra service; allowed values are dev, test, and prod.
+  - id: source_manifest
+    type: STRING
+    defaults: "{}"
+    description: Complete fixed JSON manifest. It is mandatory for a Silver backfill.
+  - id: bronze_batch_id
+    type: STRING
+    defaults: ""
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+tasks:
+  - id: plan
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Preflight Snowflake, pin Bronze versions, fingerprint dbt, and decide run or skip.
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    env:
+      SILVER_EXECUTION_ID: "{{ execution.id }}"
+      SILVER_BRONZE_BATCH_ID: "{{ inputs.bronze_batch_id }}"
+      SILVER_MODE: "{{ inputs.mode }}"
+      SILVER_TARGET: "{{ inputs.target }}"
+      SILVER_FORCE: "{{ inputs.force }}"
+      SILVER_SOURCE_MANIFEST: "{{ inputs.source_manifest }}"
+    outputFiles:
+      - silver_plan.json
+      - dbt_project.tar.gz
+    commands:
+      - >-
+        /opt/transfermarkt/.venv/bin/python -m ingestion.silver plan
+        --project-dir /opt/transfermarkt/dbt
+        --execution-id "$SILVER_EXECUTION_ID"
+        --bronze-batch-id "$SILVER_BRONZE_BATCH_ID"
+        --mode "$SILVER_MODE" --target "$SILVER_TARGET"
+        --force "$SILVER_FORCE"
+        --source-manifest "$SILVER_SOURCE_MANIFEST"
+        --output silver_plan.json --archive dbt_project.tar.gz
+    timeout: PT15M
+
+  - id: run_dbt
+    type: io.kestra.plugin.docker.cli.Run
+    description: Run the immutable project copy in the pinned dbt image and always persist dbt evidence.
+    runIf: "{{ outputs.plan.vars.should_run == true }}"
+    containerImage: "{{ envs.dbt_image }}"
+    pullPolicy: IF_NOT_PRESENT
+    entryPoint:
+      - /bin/sh
+    inputFiles:
+      dbt_project.tar.gz: "{{ outputs.plan.outputFiles['dbt_project.tar.gz'] }}"
+      silver_plan.json: "{{ outputs.plan.outputFiles['silver_plan.json'] }}"
+    outputFiles:
+      - artifacts/**
+    env:
+      SNOWFLAKE_ACCOUNT: "{{ envs.snowflake_account }}"
+      SNOWFLAKE_USER: "{{ envs.snowflake_user }}"
+      SNOWFLAKE_PASSWORD: "{{ envs.snowflake_password }}"
+      SNOWFLAKE_ROLE: "{{ envs.snowflake_role }}"
+      SNOWFLAKE_WAREHOUSE: "{{ envs.snowflake_warehouse }}"
+      SNOWFLAKE_DATABASE: "{{ envs.snowflake_database }}"
+      SNOWFLAKE_BRONZE_SCHEMA: "{{ envs.snowflake_bronze_schema }}"
+      SNOWFLAKE_AUTH_METHOD: "{{ envs.snowflake_auth_method }}"
+      SNOWFLAKE_STAGING_SCHEMA: "{{ envs.snowflake_staging_schema }}"
+      SNOWFLAKE_SILVER_SCHEMA: "{{ envs.snowflake_silver_schema }}"
+      DBT_DEV_SCHEMA: "{{ envs.dbt_dev_schema }}"
+      DBT_TEST_SCHEMA: "{{ envs.dbt_test_schema }}"
+      DBT_TARGET: "{{ outputs.plan.vars.target }}"
+    commands:
+      - -c
+      - |
+        set -eu
+        mkdir -p dbt_project artifacts
+        tar -xzf dbt_project.tar.gz -C dbt_project
+        cp silver_plan.json artifacts/silver_plan.json
+        python dbt_project/orchestration/run_dbt.py \
+          --project-dir dbt_project \
+          --plan silver_plan.json \
+          --artifacts-dir artifacts \
+          --target "$DBT_TARGET" \
+          --max-attempts 3
+    wait: true
+    timeout: PT8H
+
+  - id: finalize
+    type: io.kestra.plugin.scripts.python.Commands
+    description: Validate dbt results and outputs, save evidence, then advance the Silver checkpoint only on success.
+    runIf: "{{ outputs.plan.vars.should_run == true }}"
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    env:
+      SILVER_EXECUTION_ID: "{{ execution.id }}"
+    inputFiles: "{{ outputs.run_dbt.outputFiles }}"
+    outputFiles:
+      - silver_summary.json
+      - quarantine_evidence.json
+    commands:
+      - >-
+        /opt/transfermarkt/.venv/bin/python -m ingestion.silver finalize
+        --execution-id "$SILVER_EXECUTION_ID"
+        --plan artifacts/silver_plan.json
+        --artifact-dir artifacts
+        --output silver_summary.json
+        --quarantine-output quarantine_evidence.json
+    timeout: PT15M
+
+  - id: fail_invalid_build
+    type: io.kestra.plugin.core.execution.Fail
+    condition: >-
+      {{ outputs.plan.vars.should_run == true
+         and outputs.finalize.vars.status != "SUCCESS" }}
+    errorMessage: Silver dbt build or its critical validation failed; artifacts and audit were preserved and the checkpoint was not advanced.
+
+errors:
+  - id: record_unexpected_failure
+    type: io.kestra.plugin.scripts.python.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    allowFailure: true
+    env:
+      SILVER_EXECUTION_ID: "{{ execution.id }}"
+      SILVER_TARGET: '{{ outputs.plan.vars.target ??? inputs.target }}'
+      SILVER_ERROR: '{{ error.message ?? "Unexpected Kestra task failure" }}'
+    commands:
+      - >-
+        /opt/transfermarkt/.venv/bin/python -m ingestion.silver fail
+        --execution-id "$SILVER_EXECUTION_ID"
+        --target "$SILVER_TARGET" --error "$SILVER_ERROR"
+
+outputs:
+  - id: status
+    type: STRING
+    value: '{{ outputs.finalize.vars.status ??? "SKIPPED" }}'
+  - id: target
+    type: STRING
+    value: "{{ outputs.plan.vars.target }}"
+  - id: should_run
+    type: BOOL
+    value: "{{ outputs.plan.vars.should_run }}"
+  - id: decision_reasons
+    type: ARRAY
+    value: "{{ outputs.plan.vars.decision_reasons }}"
+  - id: manifest_fingerprint
+    type: STRING
+    value: "{{ outputs.plan.vars.manifest_fingerprint }}"
+  - id: transformation_fingerprint
+    type: STRING
+    value: "{{ outputs.plan.vars.transformation_fingerprint }}"

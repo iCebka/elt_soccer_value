@@ -1,12 +1,13 @@
 # Transfermarkt datasets → Snowflake Bronze
 
-Ingesta Source → Bronze de los 12 snapshots CSV de [`dcaribou/transfermarkt-datasets`](https://github.com/dcaribou/transfermarkt-datasets). Kestra `2.0.4` orquesta; PostgreSQL conserva su estado; Python consulta la fuente; Snowflake archiva cada versión nueva y publica tablas RAW. Silver, dbt, Spark y modelos están fuera del alcance.
+Ingesta Source → Bronze de los 12 snapshots CSV de [`dcaribou/transfermarkt-datasets`](https://github.com/dcaribou/transfermarkt-datasets). Kestra `2.0.4` orquesta; PostgreSQL conserva su estado; Python consulta la fuente; Snowflake archiva cada versión nueva y publica tablas RAW. dbt selecciona versiones Bronze auditadas, construye staging y entidades base Silver limpias, y publica los cuatro productos Silver contratados: `silver_players_current`, `silver_games_enriched`, `silver_player_match` y `silver_player_valuations_enriched`. Gold y el modelo predictivo se implementan en etapas posteriores.
 
 La fuente publica snapshots completos, no archivos mensuales. `incremental` significa “consultar la fuente y cargar solo si el contenido cambió”. Un backfill de septiembre ejecutado hoy consulta el snapshot disponible hoy: no reconstruye cómo era el archivo en septiembre.
 
 ## Componentes y objetos
 
-- Kestra `2.0.4`, plugin Python `1.13.0`, Process runner y Basic Auth.
+- Kestra `2.0.4`, plugin Python `1.13.0`, Process runner, plugin Docker
+  `1.6.2` para el contenedor dbt y Basic Auth.
 - Schedule `monthly_first_day`: `0 6 1 * *`, `America/Guayaquil`, inicialmente desactivado.
 - El “retrigger mensual” es ese Schedule creando una ejecución nueva; no es el retry de una ejecución antigua.
 - Una sola ejecución simultánea del flujo Bronze; manual, Schedule y backfill comparten el mismo flujo.
@@ -15,6 +16,106 @@ La fuente publica snapshots completos, no archivos mensuales. `incremental` sign
 - Autenticación Snowflake exclusivamente con usuario/contraseña; no se leen ni montan claves `.p8`.
 
 Vea [arquitectura](docs/architecture.md), [contrato Bronze](docs/bronze_contract.md) y [verificaciones](docs/verification.md).
+
+## Infraestructura dbt para Silver
+
+El servicio `dbt` es de una sola ejecución y está aislado detrás del profile Compose `silver`; no altera el arranque normal de Bronze/Kestra. Usa `dbt-core==1.12.5`, `dbt-snowflake==1.12.1`, autenticación por contraseña y el mismo account/rol/warehouse/database de la ingesta.
+
+```powershell
+docker compose --profile silver build dbt
+docker compose --profile silver run --rm dbt parse --no-version-check
+docker compose --profile silver run --rm dbt run-operation report_effective_schemas --target dev --no-version-check
+docker compose --profile silver run --rm dbt debug --target dev --no-version-check
+docker compose --profile silver run --rm dbt build --target test --select +tag:silver_stage_2 --no-version-check
+docker compose --profile silver run --rm dbt build --target test --select +tag:silver_stage_3 --no-version-check
+docker compose --profile silver run --rm dbt build --target test --select +tag:silver_stage_4 --no-version-check
+docker compose --profile silver run --rm dbt build --target test --select +tag:silver_stage_5 --no-version-check
+docker compose --profile silver run --rm dbt build --target test --select +tag:silver_stage_6 --no-version-check
+```
+
+`dev` es el target seguro predeterminado: genera `DBT_DEV_STAGING` y `DBT_DEV_SILVER`; `test` usa `DBT_TEST_STAGING` y `DBT_TEST_SILVER`. `prod` genera exactamente `STAGING` y `SILVER` (o los nombres configurados), sin prefijo. El build de etapa 2 selecciona una versión `SUCCESS` por fuente en un manifiesto materializado, lee RAW sin mezclar snapshots y ejecuta seeds, bases, quarantine, reconciliación y pruebas. Las etapas 3–6 construyen respectivamente perfil actual, partidos, appearances y el historial completo de valoraciones. `dbt debug` sí abre una conexión; `dbt parse` y `report_effective_schemas` solo validan configuración/nombres. Consulte el [contrato consolidado](docs/silver_contract.md), [contrato base](docs/silver_transfermarkt.md), [contrato de jugadores](docs/silver_players_current.md), [contrato de partidos](docs/silver_games_enriched.md), [contrato player-match](docs/silver_player_match.md), [contrato de valoraciones](docs/silver_player_valuations_enriched.md) y [progreso](docs/silver_implementation_progress.md).
+
+## Orquestación Silver
+
+El flow independiente `football.transfermarkt.transfermarkt_silver` ejecuta
+`dbt build --select +tag:transfermarkt_silver` en la imagen dbt fijada. Bronze
+lo llama como único Subflow después de toda comprobación exitosa, incluso si
+no hubo archivos nuevos; Silver también admite ejecución manual normal,
+`force` y backfill con un manifiesto explícito de versiones conservadas.
+
+```powershell
+.\scripts\run-silver-flow.ps1 -Target test
+.\scripts\run-silver-flow.ps1 -Target test -Force
+```
+
+No se agregó otro Schedule: se conserva el mensual de Bronze. La decisión usa
+versiones Bronze, existencia de las cuatro salidas y un fingerprint por
+contenido de SQL/YAML/macros/seeds/configuración. Auditoría, checkpoint,
+artefactos, reintentos clasificados y la limitación no atómica de dbt se
+detallan en [orquestación Silver](docs/silver_orchestration.md).
+
+### Entrega y aceptación de Silver
+
+Los cuatro productos finales están cerrados con estos grains:
+
+| Tabla | Grain |
+|---|---|
+| `silver_players_current` | una fila por `player_id` |
+| `silver_games_enriched` | una fila por `game_id` |
+| `silver_player_match` | una fila por `appearance_id` |
+| `silver_player_valuations_enriched` | una fila por (`player_id`, `valuation_date`) |
+
+El siguiente procedimiento fue comprobado en Windows/PowerShell sobre el
+target aislado `test`. Recrea solo Kestra y conserva los volúmenes:
+
+```powershell
+docker compose config --quiet
+docker compose --profile silver build dbt
+docker compose build kestra
+docker compose up -d postgres
+docker compose up -d --no-deps --force-recreate kestra
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\wait-kestra.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-flows.ps1
+
+docker compose --profile silver run --rm dbt parse `
+  --target test --no-version-check --no-partial-parse --warn-error
+docker compose --profile silver run --rm dbt debug `
+  --target test --no-version-check
+docker compose --profile silver run --rm dbt show `
+  --target test --inline "select 1 as connection_ok" --no-version-check
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run-silver-flow.ps1 -Target test
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run-silver-flow.ps1 -Target test -Force
+```
+
+`dbt debug` muestra identificadores de conexión, aunque no imprime la
+contraseña; no publique esa salida. El flujo real es
+`football.transfermarkt.transfermarkt_silver` y ejecuta el contenedor dbt con
+las variables de Compose. Consultas operativas, sin incluir secretos:
+
+```powershell
+# Runs/checkpoint/versiones Bronze usadas; límite 1..100.
+docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python `
+  -m ingestion.silver audit --target test --limit 10
+
+# Grains, huellas de negocio, cobertura, importes, reconciliación y quarantine.
+docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python `
+  -m ingestion.silver verify --target test
+
+# Estado de una ejecución devuelta por run-silver-flow.ps1.
+$executionId = '<execution-id>'
+docker compose exec -T -e "SILVER_EXECUTION_ID=$executionId" kestra sh -lc `
+  'curl --fail --silent --user "$KESTRA_BASIC_AUTH_USERNAME:$KESTRA_BASIC_AUTH_PASSWORD" "http://localhost:8080/api/v1/main/executions/$SILVER_EXECUTION_ID"'
+```
+
+Los artifacts `manifest.json` y `run_results.json` quedan en la ejecución de
+Kestra y sus hashes/rutas quedan auditados. Una ejecución normal posterior se
+omite solo con razón `already_validated`; `-Force` reconstruye de forma
+idempotente. El Schedule Bronze permanece desactivado hasta un preflight
+operativo explícito, y no se creó un Schedule Silver adicional.
 
 ## 1. Requisitos y configuración en PowerShell
 
@@ -36,6 +137,10 @@ Complete localmente los secretos; nunca los pegue en el chat ni los registre en 
 | `SNOWFLAKE_ROLE`, `SNOWFLAKE_WAREHOUSE` | rol y warehouse del loader |
 | `SNOWFLAKE_DATABASE`, `SNOWFLAKE_BRONZE_SCHEMA` | destino, por defecto `FOOTBALL.BRONZE` |
 | `SNOWFLAKE_AUTH_METHOD=password` | único modo aceptado |
+| `DBT_TARGET` | target manual predeterminado: `dev`, `test` o `prod` |
+| `DBT_DEV_SCHEMA`, `DBT_TEST_SCHEMA` | prefijos aislados para targets no productivos |
+| `SNOWFLAKE_STAGING_SCHEMA`, `SNOWFLAKE_SILVER_SCHEMA` | schemas exactos usados solo por `prod` |
+| `DBT_IMAGE` | imagen fijada que ejecuta el task Docker de Kestra |
 
 El conector usa `authenticator="snowflake"`; no usa `authenticator="password"`, claves privadas ni `externalbrowser`. Si Snowflake exige MFA/políticas incompatibles con contraseña no interactiva, el preflight falla y debe configurarse un usuario de servicio conforme a la política; no desactive MFA para sortearla.
 
@@ -46,7 +151,8 @@ El conector usa `authenticator="snowflake"`; no usa `authenticator="password"`, 
 docker compose config --quiet
 
 docker compose build
-docker compose up -d --force-recreate postgres kestra
+docker compose up -d postgres
+docker compose up -d --no-deps --force-recreate kestra
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\wait-kestra.ps1
 .\scripts\register-flows.ps1

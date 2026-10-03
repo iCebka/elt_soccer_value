@@ -35,6 +35,45 @@ def _is_transient_snowflake(exc: OperationalError) -> bool:
     return not any(marker in message for marker in permanent_markers)
 
 
+def snowflake_connection_kwargs(
+    settings: SnowflakeSettings,
+    *,
+    application: str,
+) -> dict:
+    """Build the one password-authenticated connector contract used by Bronze/Silver."""
+    return {
+        "account": settings.account,
+        "user": settings.user,
+        "password": settings.password,
+        "authenticator": "snowflake",
+        "role": settings.role,
+        "warehouse": settings.warehouse,
+        "database": settings.database,
+        "login_timeout": 30,
+        "network_timeout": 120,
+        "application": application,
+        "autocommit": False,
+        "session_parameters": {"TIMEZONE": "UTC"},
+    }
+
+
+def connect_snowflake(
+    settings: SnowflakeSettings,
+    *,
+    application: str,
+):
+    """Connect with at most three attempts, retrying transient failures only."""
+    kwargs = snowflake_connection_kwargs(settings, application=application)
+    for attempt in range(1, 4):
+        try:
+            return snowflake.connector.connect(**kwargs)
+        except OperationalError as exc:
+            if attempt == 3 or not _is_transient_snowflake(exc):
+                raise
+            time.sleep(min(10 * (2 ** (attempt - 1)), 120))
+    raise AssertionError("unreachable")
+
+
 class SnowflakeWarehouse:
     """Snowflake persistence boundary for an atomic asset publication."""
 
@@ -44,30 +83,16 @@ class SnowflakeWarehouse:
         self.connection = self._connect_with_retry()
 
     def _connection_kwargs(self) -> dict:
-        return {
-            "account": self.settings.account,
-            "user": self.settings.user,
-            "password": self.settings.password,
-            "authenticator": "snowflake",
-            "role": self.settings.role,
-            "warehouse": self.settings.warehouse,
-            "database": self.settings.database,
-            "login_timeout": 30,
-            "network_timeout": 120,
-            "application": "transfermarkt_bronze_ingestion",
-            "autocommit": False,
-            "session_parameters": {"TIMEZONE": "UTC"},
-        }
+        return snowflake_connection_kwargs(
+            self.settings,
+            application="transfermarkt_bronze_ingestion",
+        )
 
     def _connect_with_retry(self):
-        for attempt in range(1, 4):
-            try:
-                return snowflake.connector.connect(**self._connection_kwargs())
-            except OperationalError as exc:
-                if attempt == 3 or not _is_transient_snowflake(exc):
-                    raise
-                time.sleep(min(10 * (2 ** (attempt - 1)), 120))
-        raise AssertionError("unreachable")
+        return connect_snowflake(
+            self.settings,
+            application="transfermarkt_bronze_ingestion",
+        )
 
     def _execute(self, cursor, sql: str, params=None, *, context: str):
         """Add safe statement/object context to Snowflake 002043 failures."""

@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: base_tm__source_manifest
+    description: >-
+      One audited SUCCESS version per Transfermarkt source. It is materialized
+      before staging, so a build never mixes source snapshots. A complete fixed
+      mapping may be supplied through transfermarkt_source_manifest.
+    columns:
+      - name: asset_name
+        description: Transfermarkt asset name.
+        data_tests: [not_null, unique]
+      - name: bronze_ingestion_run_id
+        description: SUCCESS run that owns the selected RAW rows.
+        data_tests: [not_null]
+      - name: source_version_checksum
+        description: SHA-256 content identity selected for the build.
+        data_tests: [not_null]
+      - name: source_captured_at
+        description: Real capture time; distinct from event dates.
+      - name: manifest_resolved_at
+        description: Time this immutable-per-build selection was materialized.
+        data_tests: [not_null]
+      - name: is_fixed_manifest
+        description: True when versions came from the explicit dbt var.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [true, false]
+                quote: false
+
+  - name: base_tm__quarantine
+    description: >-
+      One row per rejected representative record. Multiple reasons remain in a
+      single array; byte-identical excess rows are counted as duplicates instead.
+    columns:
+      - {name: asset_name, data_tests: [not_null]}
+      - {name: rejection_reasons, data_tests: [not_null]}
+      - {name: source_version_checksum, data_tests: [not_null]}
+      - {name: bronze_ingestion_run_id, data_tests: [not_null]}
+
+  - name: base_tm__reconciliation
+    description: Per-source reconciliation of input, accepted, duplicate and rejected rows.
+    data_tests:
+      - expression_is_true:
+          arguments:
+            expression: input_rows = accepted_rows + identical_duplicate_rows + rejected_rows
+    columns:
+      - {name: asset_name, data_tests: [not_null, unique]}
+      - {name: input_rows, data_tests: [not_null]}
+      - {name: silver_processed_at, data_tests: [not_null]}

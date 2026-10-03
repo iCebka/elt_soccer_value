@@ -1,0 +1,35 @@
+version: 2
+
+sources:
+  - name: transfermarkt_bronze
+    description: >-
+      Append-only complete Transfermarkt snapshot versions and their audited
+      publication checkpoints. Staging never reads *_LATEST: every model joins
+      RAW to the materialized per-run manifest.
+    database: "{{ env_var('SNOWFLAKE_DATABASE', 'FOOTBALL') }}"
+    schema: "{{ env_var('SNOWFLAKE_BRONZE_SCHEMA', 'BRONZE') }}"
+    loader: kestra_transfermarkt_bronze
+    quoting:
+      database: false
+      schema: false
+      identifier: false
+    tables:
+      - {name: competitions_raw, identifier: COMPETITIONS_RAW}
+      - {name: clubs_raw, identifier: CLUBS_RAW}
+      - {name: players_raw, identifier: PLAYERS_RAW}
+      - {name: games_raw, identifier: GAMES_RAW}
+      - {name: appearances_raw, identifier: APPEARANCES_RAW}
+      - {name: player_valuations_raw, identifier: PLAYER_VALUATIONS_RAW}
+      - {name: transfers_raw, identifier: TRANSFERS_RAW}
+      - {name: club_games_raw, identifier: CLUB_GAMES_RAW}
+      - {name: game_events_raw, identifier: GAME_EVENTS_RAW}
+      - {name: game_lineups_raw, identifier: GAME_LINEUPS_RAW}
+      - {name: countries_raw, identifier: COUNTRIES_RAW}
+      - {name: national_teams_raw, identifier: NATIONAL_TEAMS_RAW}
+      - name: transfermarkt_ingestion_batches
+        identifier: TRANSFERMARKT_INGESTION_BATCHES
+      - name: transfermarkt_ingestion_files
+        identifier: TRANSFERMARKT_INGESTION_FILES
+        description: >-
+          Authoritative source for SUCCESS versions, capture/check timestamps,
+          checksums, source version and origin run.

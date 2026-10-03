@@ -9,7 +9,9 @@ __pycache__
 *.p8
 *.pem
 *.key
-docs
 work
 tmp
+dbt/target
+dbt/logs
+dbt/dbt_packages
 

@@ -47,3 +47,8 @@ htmlcov/
 *.ndjson
 tmp/
 work/
+
+# dbt artifacts and downloaded packages
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/

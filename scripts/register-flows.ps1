@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 $flows = @(
     @{ Id = 'transfermarkt_ingest_asset'; File = '/opt/transfermarkt/flows/transfermarkt_ingest_asset.yml' },
+    @{ Id = 'transfermarkt_silver'; File = '/opt/transfermarkt/flows/transfermarkt_silver.yml' },
     @{ Id = 'transfermarkt_ingest_bronze'; File = '/opt/transfermarkt/flows/transfermarkt_ingest_bronze.yml' }
 )
 

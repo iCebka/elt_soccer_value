@@ -1,0 +1,100 @@
+version: 2
+
+models:
+  - name: silver_player_match
+    description: >-
+      One row per appearance_id. Appearances are enriched with the unique game
+      and with the club_games perspective selected by the composite
+      (game_id, player_club_id) key. All joins are LEFT JOIN so missing context
+      is reported rather than dropping the appearance. Current club remains
+      separate from the team represented in the historical appearance.
+    columns:
+      - name: appearance_id
+        description: Transfermarkt appearance identifier and model grain.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments: {to: "ref('base_tm__appearances')", field: appearance_id}
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: "ref('base_tm__players')", field: player_id}
+              config: {severity: warn}
+      - name: game_id
+        description: Source game ID retained even if game context is unavailable.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: "ref('silver_games_enriched')", field: game_id}
+              config: {severity: warn}
+      - name: player_club_id
+        description: Team represented by the player in this appearance.
+      - name: player_current_club_id
+        description: Current-club context from appearances; never replaces player_club_id.
+      - name: match_date
+        description: Games date when available, otherwise the appearances date.
+        data_tests:
+          - not_null
+          - column_is_type:
+              arguments: {expected_type: DATE}
+      - name: match_date_source
+        data_tests:
+          - accepted_values:
+              arguments: {values: [games, appearances_fallback, missing]}
+      - name: date_comparison_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - match
+                  - mismatch_games_preferred
+                  - games_not_found_appearances_used
+                  - games_date_missing_appearances_used
+                  - appearance_date_missing_games_used
+                  - missing_both
+      - name: competition_id
+        description: Games competition when available, otherwise appearances competition.
+      - name: competition_id_source
+        data_tests:
+          - accepted_values:
+              arguments: {values: [games, appearances_fallback, missing]}
+      - name: competition_comparison_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - match
+                  - mismatch_games_preferred
+                  - games_not_found_appearances_used
+                  - games_competition_missing_appearances_used
+                  - appearance_competition_missing_games_used
+                  - missing_both
+      - name: player_team_hosting
+        data_tests:
+          - accepted_values:
+              arguments: {values: [home, away]}
+              config: {where: "player_team_hosting is not null"}
+      - name: player_team_result
+        data_tests:
+          - accepted_values:
+              arguments: {values: [win, draw, loss, unknown]}
+      - name: game_join_status
+        data_tests:
+          - accepted_values:
+              arguments: {values: [matched_game_id, not_found]}
+      - name: club_game_join_status
+        data_tests:
+          - accepted_values:
+              arguments: {values: [matched_game_and_player_club, missing_player_club_id, not_found]}
+      - name: team_context_status
+        data_tests:
+          - accepted_values:
+              arguments: {values: [aligned_home, aligned_away, games_not_found, club_game_not_found, inconsistent]}
+      - {name: appearances_source_version_checksum, data_tests: [not_null]}
+      - {name: club_games_source_version_checksum, data_tests: [not_null]}
+      - {name: games_source_version_checksum, data_tests: [not_null]}
+      - {name: competitions_source_version_checksum, data_tests: [not_null]}
+      - {name: clubs_source_version_checksum, data_tests: [not_null]}
+      - {name: silver_processed_at, data_tests: [not_null]}

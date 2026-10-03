@@ -26,6 +26,12 @@ COPY requirements-dev.txt /opt/transfermarkt/requirements-dev.txt
 RUN /opt/transfermarkt/.venv/bin/pip install --no-cache-dir -r /opt/transfermarkt/requirements-dev.txt
 COPY pytest.ini /opt/transfermarkt/pytest.ini
 COPY tests /opt/transfermarkt/tests
+COPY dbt /opt/transfermarkt/dbt
+COPY docker /opt/transfermarkt/docker
+COPY kestra /opt/transfermarkt/kestra
+COPY scripts /opt/transfermarkt/scripts
+COPY docs /opt/transfermarkt/docs
+COPY docker-compose.yml /opt/transfermarkt/docker-compose.yml
 ENTRYPOINT ["/opt/transfermarkt/.venv/bin/python"]
 CMD ["-m", "pytest"]
 
