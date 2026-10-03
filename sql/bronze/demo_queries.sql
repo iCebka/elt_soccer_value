@@ -1,0 +1,62 @@
+-- ============================================
+-- PSET 2 - DEMO QUERIES
+-- ============================================
+
+USE DATABASE FOOTBALL;
+USE SCHEMA BRONZE;
+
+-- 1. Ver objetos creados
+SHOW TABLES;
+SHOW VIEWS;
+
+-- 2. Lotes recientes
+SELECT
+    BATCH_ID,
+    MODE,
+    STATUS,
+    STARTED_AT,
+    FINISHED_AT,
+    SUMMARY,
+    ERROR
+FROM TRANSFERMARKT_INGESTION_BATCHES
+ORDER BY STARTED_AT DESC;
+
+-- 3. Auditoría de archivos
+SELECT
+    ASSET,
+    STATUS,
+    ROWS_READ,
+    ROWS_LOADED,
+    SOURCE_FILE_SHA256,
+    SCHEMA_CHANGED
+FROM TRANSFERMARKT_INGESTION_FILES
+ORDER BY STARTED_AT DESC;
+
+-- 4. Mostrar una tabla RAW
+SELECT *
+FROM COMPETITIONS_RAW
+LIMIT 10;
+
+-- 5. Mostrar última versión
+SELECT *
+FROM COMPETITIONS_LATEST
+LIMIT 10;
+
+-- 6. Conteo
+SELECT COUNT(*)
+FROM COMPETITIONS_LATEST;
+
+-- 7. Verificar duplicación por checksum
+SELECT
+    SOURCE_FILE_SHA256,
+    COUNT(*) AS rows_loaded
+FROM COMPETITIONS_RAW
+GROUP BY SOURCE_FILE_SHA256;
+
+-- 8. Assets cargados
+SELECT
+    ASSET,
+    COUNT(*) AS ejecuciones
+FROM TRANSFERMARKT_INGESTION_FILES
+GROUP BY ASSET
+ORDER BY ASSET;
