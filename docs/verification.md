@@ -1,19 +1,31 @@
 # Verificación
 
-Estado inicial del 2 de octubre de 2026. Este archivo se actualiza con los resultados reproducibles obtenidos en el entorno local.
+Resultados del 2 de octubre de 2026 para el cambio mensual/condicional. Una prueba con fixture no se presenta como integración real.
 
-| Verificación | Estado | Evidencia/pendiente |
+| Comprobación | Resultado | Evidencia |
 |---|---|---|
-| URLs, HTTP, gzip y encabezados de 12 assets | OK | Consulta directa al host publicado; 12 respuestas HTTP 200 y primer registro gzip válido. Encabezados guardados en `config/assets.yml`. |
-| README y cobertura del proveedor | OK | README oficial consultado: actualizaciones pausadas y cortes 2026-07-06 / 2026-06-28 / 2026-06-12. |
-| Asset real completo pequeño | OK | `competitions.csv.gz`: 2.242 bytes, 65 filas, SHA-256 `8924ddfbc0e9989f4a42a3c32ebb6faa671614625086d7fa84353f955352ea88`, encabezado esperado y `schema_changed=false`. Se validó, no se declaró cargado. |
-| Pruebas Python focalizadas | OK | `13 passed` en Python 3.12 dentro del target Docker `test`; incluye password sin `.p8`, contraseña ausente, redacción de secretos, idempotencia y errores HTTP. |
-| `docker compose config --quiet` | OK | Código de salida 0; se evitó imprimir la configuración expandida. |
-| Build y arranque Docker | OK | Imagen custom reconstruida con password auth. PostgreSQL y Kestra reportan `healthy`; UI publicada en `localhost:8080`; no existe montaje de claves. |
-| Validación/registro de flows | OK | Ambos YAML actualizados fueron aceptados por la API de Kestra 2.0. Trigger semanal permanece desactivado. |
-| Conexión y carga real Snowflake | OK | Con usuario/contraseña, `SELECT 1` y creación/verificación de `FOOTBALL.BRONZE` terminaron correctamente. El lote Kestra `469dg39ysEJrzg7DYiJFQm` cargó `competitions`: 65 leídas, 65 cargadas, estado `SUCCESS`; RAW y LATEST contienen 65 filas. |
-| Preflight sin contraseña | OK (fallo esperado) | La validación local exige `SNOWFLAKE_PASSWORD`, no busca archivos `.p8` y no expone secretos. |
-| Idempotencia real y fallo parcial en Snowflake | OK / parcial | El segundo lote Kestra `6LnBEQ0s5PksQD29yUf9w0` quedó `SUCCESS` con el asset `SKIPPED`; RAW siguió en 65 filas, LATEST en 65 y existe un solo checksum. La recuperación tras fallo parcial permanece cubierta por prueba local. |
+| Pruebas Python | OK | `27 passed` con Python 3.12. Incluyen Schedule/manual/backfill lógico, primera carga, ETag igual/diferente, HEAD/GET 304, ausencia de validadores, timeout/429/5xx, límite HTTP de tres solicitudes, fallo sin checkpoint, recuperación sin duplicados, auditoría y redacción de credenciales. |
+| Compose | OK | `docker compose config --quiet` terminó con código 0 sin imprimir variables expandidas. |
+| Vista previa de backfill | OK | Intervalo 2026-07-01 a 2026-09-02 produjo exactamente tres fechas lógicas: 1 de julio, agosto y septiembre a las 06:00 `-05:00`; no llamó a Kestra. |
+| R2 HEAD | OK | `competitions.csv.gz` respondió `200` con ETag entre comillas, `Last-Modified` y `Content-Length`. |
+| R2 condicional | OK | Se obtuvo el ETag dinámicamente del HEAD, se reenvió sin normalizar en `If-None-Match` y R2 respondió `304`. El valor no está hardcodeado. |
+| Schedule estático | OK | YAML: `0 6 1 * *`, `America/Guayaquil`, `disabled: true`, `recoverMissedSchedules: NONE`, concurrency 1. Compose también fija recuperación global `NONE`. |
+| Docker/Kestra actual | OK | Se reconstruyó la imagen, PostgreSQL quedó saludable, Kestra `2.0.4` quedó listo y su API aceptó ambos flows. El flow principal registrado (revisión 2) reportó `0 6 1 * *`, `America/Guayaquil`, `disabled: true`, `recoverMissedSchedules: NONE` y concurrencia 1. No se activó el trigger ni se creó ningún backfill. |
+| Snowflake preflight/migración | OK | Con las credenciales locales por contraseña, `SELECT 1` terminó correctamente y `check` añadió las columnas de auditoría con migraciones no destructivas. No apareció `002043`. |
+| Integración condicional real | OK | `competitions`: un intento inicial expuso y dejó auditado un fallo `001065` al convertir un `NULL` histórico; no adelantó el checkpoint. Tras tipar el bind, `asset-b` recuperó con HEAD+GET y `SKIPPED_UNCHANGED` por SHA-256 (2 solicitudes). La ejecución final obtuvo HEAD `304`, no hizo GET y quedó `SKIPPED_UNCHANGED` (1 solicitud); una consulta posterior confirmó 65 filas RAW y 1 checksum. |
+| Integración Kestra real | OK | Las ejecuciones manuales `7KwfRbxm1Lo5Ucdf3FaT9Q` y `68xVTV9l01dyqVk2YJU77T`, limitadas a `competitions`, terminaron `SUCCESS`. La última auditoría quedó `SKIPPED_UNCHANGED`, HEAD `304`, GET nulo, 0 filas cargadas y 1 intento HTTP. Después de repetir, RAW continuó en 65 filas y 1 checksum. |
+| Secretos en logs | OK | Se compararon los logs del contenedor con `SNOWFLAKE_PASSWORD` y `KESTRA_PASSWORD` sin imprimir sus valores; ninguna apareció. El endpoint `Disable` también se verificó y el Schedule quedó desactivado. |
 
-Una prueba local o mock no se considera éxito end-to-end. La carga real solo queda acreditada por un lote `SUCCESS`, conteos RAW/LATEST y originales visibles en el stage de Snowflake.
+Comandos usados para repetir la validación Kestra:
 
+```powershell
+docker compose build
+docker compose up -d --force-recreate postgres kestra
+.\scripts\wait-kestra.ps1
+.\scripts\register-flows.ps1
+docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python -m ingestion.cli --config /opt/transfermarkt/config/assets.yml check
+.\scripts\run-flow.ps1 -Mode incremental -Assets competitions
+.\scripts\run-flow.ps1 -Mode incremental -Assets competitions
+```
+
+La primera ejecución debe ser `SUCCESS` solo si existe una versión nueva o aún no hay una exitosa. La segunda debe ser `SKIPPED_UNCHANGED`, no hacer GET y mantener sin cambios el conteo RAW. Después del preflight puede activarse el cron con `.\scripts\manage-schedule.ps1 -Action Enable`.

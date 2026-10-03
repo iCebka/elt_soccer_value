@@ -23,7 +23,7 @@ También se entregan `TRANSFERMARKT_INGESTION_BATCHES`, `TRANSFERMARKT_INGESTION
 
 ## Grain, metadata y versionado
 
-El grain de cada tabla RAW es una fila original del CSV dentro de una versión identificada por `SOURCE_FILE_SHA256`. El grain de cada vista `*_LATEST` es una fila original del CSV perteneciente al intento `SUCCESS` más reciente del asset (`FINISHED_AT`, luego `RUN_ID`). Los intentos `FAILED` y `SKIPPED` nunca seleccionan una versión.
+El grain de cada tabla RAW es una fila original del CSV dentro de una versión identificada por URL y `SOURCE_FILE_SHA256`. El grain de cada vista `*_LATEST` es una fila original del CSV perteneciente al intento `SUCCESS` más reciente del asset (`FINISHED_AT`, luego `RUN_ID`). Los intentos `FAILED` y `SKIPPED_UNCHANGED` no seleccionan una versión RAW distinta: el skip referencia un `SUCCESS` anterior.
 
 Cada tabla RAW contiene:
 
@@ -33,6 +33,8 @@ Cada tabla RAW contiene:
 - `INGESTION_RUN_ID` y `LOADED_AT` UTC.
 
 Los encabezados observados se guardan como array en `TRANSFERMARKT_INGESTION_FILES.OBSERVED_HEADERS`. `SCHEMA_CHANGED` indica una diferencia frente al contrato observado en `config/assets.yml`; ninguna columna nueva se descarta porque el objeto completo se conserva.
+
+La auditoría de archivos incluye `DATASET`, `SOURCE_URL`, fecha lógica, consulta efectiva, captura, estados HTTP, ETag remoto y de descarga, `Last-Modified`, `Content-Length`, SHA-256, número de intentos, filas, referencia usada, estado, motivo de skip y error. ETag es opaco y puede conservar comillas. `Last-Modified` o tamaño por sí solos no identifican una versión.
 
 ## Encabezados observados
 
@@ -72,17 +74,21 @@ FROM FOOTBALL.BRONZE.GAMES_LATEST;
 ## Comprobar un lote
 
 ```sql
-SELECT BATCH_ID, STATUS, REQUESTED_ASSETS, SUMMARY, ERROR
+SELECT BATCH_ID, LOGICAL_DATE, TRIGGER_SOURCE, STATUS,
+       REQUESTED_ASSETS, SUMMARY, ERROR
 FROM FOOTBALL.BRONZE.TRANSFERMARKT_INGESTION_BATCHES
 WHERE BATCH_ID = '<kestra-execution-id>';
 
-SELECT ASSET, STATUS, ROWS_READ, ROWS_LOADED, ERROR
+SELECT DATASET, ASSET, SOURCE_URL, STATUS, LOGICAL_DATE,
+       SOURCE_CHECKED_AT, CAPTURED_AT, REMOTE_ETAG, DOWNLOAD_ETAG,
+       SOURCE_FILE_SHA256, HTTP_ATTEMPTS, REFERENCE_RUN_ID,
+       ROWS_READ, ROWS_LOADED, ERROR
 FROM FOOTBALL.BRONZE.TRANSFERMARKT_INGESTION_FILES
 WHERE BATCH_ID = '<kestra-execution-id>'
 ORDER BY ASSET, STARTED_AT;
 ```
 
-El lote es utilizable únicamente cuando la fila de `TRANSFERMARKT_INGESTION_BATCHES` tiene `STATUS='SUCCESS'`; todos los assets pedidos tendrán un intento `SUCCESS` o `SKIPPED`.
+El lote es utilizable únicamente cuando la fila de `TRANSFERMARKT_INGESTION_BATCHES` tiene `STATUS='SUCCESS'`; todos los assets pedidos tendrán un intento `SUCCESS` o `SKIPPED_UNCHANGED`.
 
 ## Sources de dbt
 

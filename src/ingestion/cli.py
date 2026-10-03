@@ -16,12 +16,17 @@ from .prepare import prepare_ndjson
 from .snowflake import SnowflakeWarehouse
 
 
+def _redact_secrets(message: str) -> str:
+    for name in ("SNOWFLAKE_PASSWORD", "KESTRA_PASSWORD", "KESTRA_API_TOKEN"):
+        secret = os.getenv(name)
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    return message
+
+
 def _format_error(exc: Exception) -> str:
-    """Render an operational error while redacting the configured password."""
-    message = str(exc)
-    password = os.getenv("SNOWFLAKE_PASSWORD")
-    if password:
-        message = message.replace(password, "[REDACTED]")
+    """Render an operational error without leaking configured secrets."""
+    message = _redact_secrets(str(exc))
     return f"ERROR {type(exc).__name__}: {message}"
 
 
@@ -37,6 +42,8 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--config", default="config/assets.yml")
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="Check credentials and create/verify Bronze objects")
+    audit = commands.add_parser("audit", help="Print recent Bronze audit rows as JSON")
+    audit.add_argument("--limit", type=int, default=25)
     inspect = commands.add_parser(
         "inspect-source", help="Download and fully validate one real source without loading it"
     )
@@ -46,10 +53,14 @@ def parser() -> argparse.ArgumentParser:
     ingest.add_argument("--mode", choices=["incremental", "backfill"], default="incremental")
     ingest.add_argument("--batch-id")
     ingest.add_argument("--run-id")
+    ingest.add_argument("--logical-date")
+    ingest.add_argument("--trigger-source", default="manual")
     start = commands.add_parser("batch-start")
     start.add_argument("--batch-id", required=True)
     start.add_argument("--mode", choices=["incremental", "backfill"], required=True)
     start.add_argument("--assets", required=True, type=_assets)
+    start.add_argument("--logical-date")
+    start.add_argument("--trigger-source", default="manual")
     finish = commands.add_parser("batch-finish")
     finish.add_argument("--batch-id", required=True)
     finish.add_argument("--assets", required=True, type=_assets)
@@ -110,8 +121,23 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
+        if args.command == "audit":
+            rendered = json.dumps(
+                warehouse.recent_audit(args.limit),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+            print(_redact_secrets(rendered))
+            return 0
         if args.command == "batch-start":
-            warehouse.start_batch(args.batch_id, args.mode, args.assets)
+            warehouse.start_batch(
+                args.batch_id,
+                args.mode,
+                args.assets,
+                args.logical_date,
+                args.trigger_source,
+            )
             print(json.dumps({"batch_id": args.batch_id, "status": "RUNNING"}))
             return 0
         if args.command == "batch-finish":
@@ -129,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
             batch_id=args.batch_id,
             mode=args.mode,
             run_id=args.run_id or str(uuid.uuid4()),
+            logical_date=args.logical_date,
+            trigger_source=args.trigger_source,
         )
         print(json.dumps(result.__dict__, ensure_ascii=False))
         print(

@@ -1,6 +1,6 @@
 id: transfermarkt_ingest_asset
 namespace: football.transfermarkt
-description: Download, archive, and atomically publish one Transfermarkt snapshot to Bronze.
+description: HEAD, compare, conditionally download, archive, and atomically publish one current snapshot.
 
 inputs:
   - id: asset
@@ -11,6 +11,11 @@ inputs:
     type: SELECT
     defaults: incremental
     values: [incremental, backfill]
+  - id: logical_date
+    type: DATETIME
+  - id: trigger_source
+    type: STRING
+    defaults: manual
 
 concurrency:
   limit: 1
@@ -26,12 +31,15 @@ tasks:
       TM_BATCH_ID: "{{ inputs.batch_id }}"
       TM_MODE: "{{ inputs.mode }}"
       TM_RUN_ID: "{{ execution.id }}"
+      TM_LOGICAL_DATE: "{{ inputs.logical_date }}"
+      TM_TRIGGER_SOURCE: "{{ inputs.trigger_source }}"
     commands:
       - >-
         /opt/transfermarkt/.venv/bin/python -m ingestion.cli
         --config /opt/transfermarkt/config/assets.yml
         ingest --asset "$TM_ASSET" --batch-id "$TM_BATCH_ID"
         --mode "$TM_MODE" --run-id "$TM_RUN_ID"
+        --logical-date "$TM_LOGICAL_DATE" --trigger-source "$TM_TRIGGER_SOURCE"
     timeout: PT6H
 
 outputs:

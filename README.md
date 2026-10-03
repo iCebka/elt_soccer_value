@@ -1,84 +1,90 @@
 # Transfermarkt datasets → Snowflake Bronze
 
-Módulo reproducible de ingesta de los 12 snapshots CSV publicados por [`dcaribou/transfermarkt-datasets`](https://github.com/dcaribou/transfermarkt-datasets). Kestra orquesta la descarga y Snowflake conserva el `.csv.gz` original, las versiones RAW y los controles auditables. La transformación Silver, dbt, Spark, lesiones y modelos predictivos están fuera de este alcance.
+Ingesta Source → Bronze de los 12 snapshots CSV de [`dcaribou/transfermarkt-datasets`](https://github.com/dcaribou/transfermarkt-datasets). Kestra `2.0.4` orquesta; PostgreSQL conserva su estado; Python consulta la fuente; Snowflake archiva cada versión nueva y publica tablas RAW. Silver, dbt, Spark y modelos están fuera del alcance.
 
-La fuente es batch: publica snapshots completos, no una API de eventos incrementales. Aquí `incremental` significa “cargar solo si cambió el SHA-256”; `backfill` carga todo el historial que el snapshot actual contiene y retoma fallos, pero no recrea cómo se veía el proveedor en fechas pasadas.
+La fuente publica snapshots completos, no archivos mensuales. `incremental` significa “consultar la fuente y cargar solo si el contenido cambió”. Un backfill de septiembre ejecutado hoy consulta el snapshot disponible hoy: no reconstruye cómo era el archivo en septiembre.
 
-## Componentes
+## Componentes y objetos
 
-- Kestra `2.0.4` con plugin Python `1.13.0`, Process runner y Basic Auth.
-- PostgreSQL `16.10` como backend de Kestra, no como almacén de fútbol.
-- Python en una imagen personalizada; descarga streaming, validación gzip/CSV, SHA-256, NDJSON por bloques y Snowflake Connector `4.8.0`.
-- Snowflake con stage interno, una tabla RAW y una vista `LATEST` por asset, además de dos tablas de control.
-- Trigger semanal lunes 03:00 `America/Guayaquil`, entregado desactivado.
+- Kestra `2.0.4`, plugin Python `1.13.0`, Process runner y Basic Auth.
+- Schedule `monthly_first_day`: `0 6 1 * *`, `America/Guayaquil`, inicialmente desactivado.
+- El “retrigger mensual” es ese Schedule creando una ejecución nueva; no es el retry de una ejecución antigua.
+- Una sola ejecución simultánea del flujo Bronze; manual, Schedule y backfill comparten el mismo flujo.
+- HEAD condicional por asset y GET solo cuando hace falta. ETag se conserva como valor opaco, incluidas comillas o prefijo débil.
+- 12 tablas `*_RAW`, 12 vistas `*_LATEST`, dos tablas de auditoría, un stage y un file format: 28 objetos de datos/control más el schema.
+- Autenticación Snowflake exclusivamente con usuario/contraseña; no se leen ni montan claves `.p8`.
 
 Vea [arquitectura](docs/architecture.md), [contrato Bronze](docs/bronze_contract.md) y [verificaciones](docs/verification.md).
 
-## 1. Requisitos
+## 1. Requisitos y configuración en PowerShell
 
-- Docker Desktop con `docker compose`.
-- Una cuenta Snowflake y un rol con `USAGE` sobre el warehouse/database, `CREATE SCHEMA` en el database si `BRONZE` aún no existe, y privilegios de creación/lectura/escritura en ese schema.
-- Autenticación no interactiva con usuario y contraseña; la política de la cuenta debe permitirla para el usuario técnico.
-
-El pipeline no crea el database ni el warehouse. Los valores propuestos son database `FOOTBALL`, schema `BRONZE` y un warehouse dedicado como `INGEST_WH`.
-
-## 2. Configuración (PowerShell)
+Necesita Docker Desktop con Compose y un rol Snowflake con acceso al warehouse/database y privilegios para crear/usar `BRONZE`. El pipeline no crea el database ni el warehouse.
 
 ```powershell
 Copy-Item .env.example .env
 notepad .env
 ```
 
-Complete en `.env` al menos:
+Complete localmente los secretos; nunca los pegue en el chat ni los registre en Git. Variables finales:
 
-- `POSTGRES_PASSWORD`, `KESTRA_USERNAME`, `KESTRA_PASSWORD`.
-- `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_ROLE`, `SNOWFLAKE_WAREHOUSE`.
-- `SNOWFLAKE_DATABASE` y `SNOWFLAKE_BRONZE_SCHEMA` si no usará `FOOTBALL.BRONZE`.
-
-Use `SNOWFLAKE_AUTH_METHOD=password`. El pipeline pasa `authenticator="snowflake"` al conector; no admite claves privadas ni autenticación interactiva. `.env` y los archivos de trabajo están ignorados por Git. No escriba la contraseña en comandos, flows, commits ni mensajes de soporte.
-
-`SNOWFLAKE_ACCOUNT` debe ser el identificador de cuenta, preferiblemente `organizacion-cuenta`, sin `https://` ni el sufijo `.snowflakecomputing.com`; no es el nombre de usuario. Un account locator también es válido, pero fuera de AWS us-west requiere los segmentos adicionales de región/proveedor. Consulte la [configuración oficial de clientes Snowflake](https://docs.snowflake.com/en/user-guide/gen-conn-config).
-
-| Variable del repositorio | Parámetro del conector/destino |
+| Variable | Uso |
 |---|---|
-| `SNOWFLAKE_ACCOUNT` | `account` |
-| `SNOWFLAKE_USER` | `user` |
-| `SNOWFLAKE_PASSWORD` | `password` |
-| `SNOWFLAKE_ROLE` | `role` |
-| `SNOWFLAKE_WAREHOUSE` | `warehouse` |
-| `SNOWFLAKE_DATABASE` | `database` |
-| `SNOWFLAKE_BRONZE_SCHEMA` | schema Bronze usado por el pipeline |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Estado interno de Kestra |
+| `KESTRA_PORT`, `KESTRA_USERNAME`, `KESTRA_PASSWORD` | UI/API con Basic Auth |
+| `SNOWFLAKE_ACCOUNT` | `account`, preferentemente `organización-cuenta`, sin URL |
+| `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD` | `user` y `password` |
+| `SNOWFLAKE_ROLE`, `SNOWFLAKE_WAREHOUSE` | rol y warehouse del loader |
+| `SNOWFLAKE_DATABASE`, `SNOWFLAKE_BRONZE_SCHEMA` | destino, por defecto `FOOTBALL.BRONZE` |
+| `SNOWFLAKE_AUTH_METHOD=password` | único modo aceptado |
 
-Si la cuenta exige MFA para todas las autenticaciones por contraseña, el preflight fallará con el mensaje de Snowflake. No desactive MFA ni use `externalbrowser` para el job programado: aplique una política de autenticación aprobada para un usuario de servicio o el método no interactivo permitido por su organización.
+El conector usa `authenticator="snowflake"`; no usa `authenticator="password"`, claves privadas ni `externalbrowser`. Si Snowflake exige MFA/políticas incompatibles con contraseña no interactiva, el preflight falla y debe configurarse un usuario de servicio conforme a la política; no desactive MFA para sortearla.
 
-## 3. Levantar Kestra y registrar flows
+## 2. Construir, recrear y registrar los flows
 
 ```powershell
-# Valida Compose sin imprimir la configuración expandida ni secretos.
+# No imprime la configuración expandida ni secretos.
 docker compose config --quiet
 
 docker compose build
-docker compose up -d --force-recreate kestra
+docker compose up -d --force-recreate postgres kestra
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\wait-kestra.ps1
 .\scripts\register-flows.ps1
 ```
 
-Abra `http://localhost:8080` (o el `KESTRA_PORT` configurado) y use las credenciales Basic Auth de `.env`. `register-flows.ps1` valida y hace upsert sin borrar flows ajenos al directorio. Los comandos Python usan el runner `Process`, por lo que heredan las variables del servicio Kestra; no se crean contenedores de tarea separados.
+Abra `http://localhost:8080` y use las credenciales Kestra de `.env`. El Process runner ejecuta dentro del contenedor Kestra y hereda las variables Snowflake. `recoverMissedSchedules: NONE` está fijado en el trigger y globalmente: un reinicio de Docker no dispara un histórico ilimitado; los huecos se recuperan solo mediante un backfill finito.
 
-## 4. Ejecutar
+## 3. Verificar el preflight y activar el Schedule
 
-Carga completa de `competitions`, útil como smoke test real:
+Antes de activar el Schedule:
+
+```powershell
+docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python -m ingestion.cli --config /opt/transfermarkt/config/assets.yml check
+```
+
+El comando ejecuta `SELECT 1` y crea/migra objetos sin borrar datos. Solo después de verlo terminar correctamente active el trigger:
+
+```powershell
+.\scripts\manage-schedule.ps1 -Action Enable
+```
+
+Pausar futuras ejecuciones mensuales:
+
+```powershell
+.\scripts\manage-schedule.ps1 -Action Disable
+```
+
+También puede usar el toggle Enabled en la pestaña **Triggers** del flow. Registrar otra vez el YAML vuelve a aplicar `disabled: true`; active después del registro y preflight.
+
+## 4. Ejecución manual y relanzamiento
+
+Smoke test pequeño:
 
 ```powershell
 .\scripts\run-flow.ps1 -Mode incremental -Assets competitions
 ```
 
-Segunda ejecución idéntica (debe quedar `SKIPPED`, sin filas RAW duplicadas):
-
-```powershell
-.\scripts\run-flow.ps1 -Mode incremental -Assets competitions
-```
+Repita el mismo comando para relanzar desde el inicio. Cada nueva ejecución vuelve a hacer HEAD y, si corresponde, GET; no reutiliza una descarga de una ejecución anterior. Si el ETag no cambió debe registrar `SKIPPED_UNCHANGED` y no descargar ni cargar.
 
 Todos los assets:
 
@@ -91,74 +97,113 @@ $allAssets = @(
 .\scripts\run-flow.ps1 -Mode incremental -Assets $allAssets
 ```
 
-Backfill del historial disponible dentro de los snapshots seleccionados:
+En la UI use **Execute** con `assets` y `mode=incremental`. Reiniciar/replay de una ejecución fallida es posible, pero para buscar novedades se recomienda una ejecución nueva desde el inicio, de modo que vuelva a consultar la fuente.
+
+## 5. Backfill mensual finito
+
+El trigger debe estar habilitado mientras Kestra procesa el backfill. Primero haga una vista previa local; no llama a la API:
 
 ```powershell
-.\scripts\run-flow.ps1 -Mode backfill -Assets games,appearances,player_valuations
+.\scripts\manage-schedule.ps1 -Action Preview `
+  -Start '2026-07-01T00:00:00-05:00' `
+  -End   '2026-09-02T00:00:00-05:00'
 ```
 
-El script devuelve inmediatamente el JSON de la ejecución. Siga su estado en la UI. El flow principal espera los subflows, genera `summary.json`, registra el lote y falla si cualquier asset requerido falla.
+Crear exactamente ese intervalo:
 
-## 5. Consultar Snowflake
+```powershell
+.\scripts\manage-schedule.ps1 -Action Enable
+.\scripts\manage-schedule.ps1 -Action Create `
+  -Start '2026-07-01T00:00:00-05:00' `
+  -End   '2026-09-02T00:00:00-05:00'
+```
+
+Pausar, reanudar o cancelar únicamente las ejecuciones pendientes del backfill:
+
+```powershell
+.\scripts\manage-schedule.ps1 -Action Pause
+.\scripts\manage-schedule.ps1 -Action Resume
+.\scripts\manage-schedule.ps1 -Action Cancel
+```
+
+`Cancel` elimina el backfill y evita nuevas ejecuciones recuperadas; no mata una ejecución que ya está corriendo ni borra datos. Si también quiere detener el cron futuro, use `-Action Disable`. El script exige inicio y fin RFC3339, muestra cada fecha lógica antes de enviar el `PUT /api/v1/main/triggers` y pasa `mode=backfill`.
+
+Cada ejecución recuperada conserva por separado:
+
+- `LOGICAL_DATE`: mes/instante solicitado por el Schedule.
+- `STARTED_AT` y `SOURCE_CHECKED_AT`: ejecución y consulta efectiva.
+- `CAPTURED_AT`: momento en que se descargaron los bytes de esa versión.
+- `SOURCE_VERSION`, `REMOTE_ETAG`, `DOWNLOAD_ETAG` y SHA-256: identidad observada.
+
+Por tanto, varias fechas lógicas pueden quedar `SKIPPED_UNCHANGED` contra la misma versión actual. Esto es correcto y no afirma que esa versión existía históricamente.
+
+## 6. Detección, idempotencia y retries
+
+1. Lee la última versión exitosa para `Dataset1` + asset/tabla + URL.
+2. Ejecuta HEAD con `If-None-Match` cuando existe un ETag anterior.
+3. Un `304` válido o ETag idéntico registra `SKIPPED_UNCHANGED` sin GET.
+4. Primera carga, ETag distinto, HEAD no soportado o ausencia de ETag ejecutan GET condicional.
+5. La respuesta GET aporta la versión efectiva; un cambio entre HEAD y GET queda auditado. Sin ETag fiable siempre se descarga y se compara SHA-256: tamaño o fecha iguales no prueban identidad.
+6. Una versión nueva se archiva en `original/<asset>/<sha256>/`, se prepara y se publica. RAW conserva duplicados originales del CSV; la idempotencia evita publicar dos veces el mismo snapshot.
+
+HEAD y GET comparten un máximo de tres solicitudes HTTP por asset. Solo se reintentan timeout/conexión, `429` y `5xx`, con espera exponencial desde 10 s, tope de 120 s y respeto de `Retry-After`. `4xx`, URL/gzip/CSV inválidos y cambios incompatibles fallan sin retry. Kestra no añade un retry genérico, evitando multiplicar intentos.
+
+La conexión/publicación Snowflake reintenta como máximo tres veces solo ante `OperationalError` transitorio, reutilizando el archivo ya capturado. Autenticación, MFA, objetos/permisos y errores SQL no se reintentan. Un `002043` se informa con la operación y sentencia/objeto afectados.
+
+RAW y el checkpoint `SUCCESS` se confirman en la misma transacción. Un fallo no adelanta el ETag de referencia; al recuperar, se borra solo un residuo de esa URL/checksum antes de insertar, sin duplicar la versión.
+
+## 7. Auditoría en Snowflake
+
+Consultar las últimas 25 ejecuciones desde PowerShell, usando las credenciales ya
+inyectadas en Kestra y sin imprimirlas:
+
+```powershell
+docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python -m ingestion.cli --config /opt/transfermarkt/config/assets.yml audit --limit 25
+```
+
+El límite aceptado es de 1 a 1000. Para análisis SQL directo:
 
 ```sql
--- Resultado de lotes recientes.
-SELECT BATCH_ID, MODE, STATUS, STARTED_AT, FINISHED_AT, SUMMARY, ERROR
+SELECT BATCH_ID, MODE, LOGICAL_DATE, TRIGGER_SOURCE, STATUS,
+       STARTED_AT, FINISHED_AT, SUMMARY, ERROR
 FROM FOOTBALL.BRONZE.TRANSFERMARKT_INGESTION_BATCHES
 ORDER BY STARTED_AT DESC;
 
--- Auditoría por archivo/versión.
-SELECT ASSET, SOURCE_FILE_SHA256, STATUS, ROWS_READ, ROWS_LOADED,
-       OBSERVED_HEADERS, SCHEMA_CHANGED, ORIGINAL_STAGE_PATH
+SELECT DATASET, ASSET, SOURCE_URL, STATUS,
+       LOGICAL_DATE, SOURCE_CHECKED_AT, CAPTURED_AT,
+       HEAD_STATUS, GET_STATUS,
+       REMOTE_ETAG, REMOTE_LAST_MODIFIED, REMOTE_CONTENT_LENGTH,
+       DOWNLOAD_ETAG, DOWNLOAD_LAST_MODIFIED, DOWNLOAD_CONTENT_LENGTH,
+       SOURCE_VERSION, SOURCE_FILE_SHA256, HTTP_ATTEMPTS,
+       REFERENCE_RUN_ID, SKIP_REASON, ROWS_READ, ROWS_LOADED, ERROR
 FROM FOOTBALL.BRONZE.TRANSFERMARKT_INGESTION_FILES
 ORDER BY STARTED_AT DESC;
 
--- Una fila por registro del CSV de la versión exitosa más reciente.
+SELECT COUNT(*) FROM FOOTBALL.BRONZE.COMPETITIONS_RAW;
 SELECT COUNT(*) FROM FOOTBALL.BRONZE.COMPETITIONS_LATEST;
-
--- Originales archivados y archivos preparados.
 LIST @FOOTBALL.BRONZE.TRANSFERMARKT_BRONZE_STAGE/original/competitions/;
-LIST @FOOTBALL.BRONZE.TRANSFERMARKT_BRONZE_STAGE/prepared/competitions/;
 ```
 
-Los objetos se crean de forma idempotente con el comando `check` del flow. El DDL de referencia está en [`sql/bronze/objects.sql`](sql/bronze/objects.sql).
+Los mensajes y controles no contienen contraseñas. `.env`, claves y artefactos locales están ignorados por Git.
 
-## 6. Pruebas locales
-
-Las pruebas usan fixtures sintéticos identificados como tales; no los registran como cargas reales:
+## 8. Pruebas y diagnóstico
 
 ```powershell
 docker build --target test -t transfermarkt-bronze-tests:local .
 docker run --rm transfermarkt-bronze-tests:local
+docker compose config --quiet
 ```
 
-Cubren comas, comillas, saltos de línea, Unicode, campos vacíos, deriva de encabezados, gzip inválido, segunda ejecución idempotente, recuperación tras un fallo de publicación simulado y autenticación por contraseña sin depender de una clave privada.
+Las pruebas simulan primera carga, novedad, ETag igual/diferente, `304`, falta de validadores, fallo sin checkpoint, recuperación sin duplicados, Schedule/manual/backfill y redacción de secretos.
 
-Validación completa de un CSV real sin declararlo cargado en Bronze:
-
-```powershell
-docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python -m ingestion.cli --config /opt/transfermarkt/config/assets.yml inspect-source --asset competitions
-```
-
-Comandos de diagnóstico:
+Diagnóstico:
 
 ```powershell
 docker compose ps
 docker compose logs --tail 200 kestra
-docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python -m ingestion.cli --config /opt/transfermarkt/config/assets.yml check
+docker compose exec -T kestra /opt/transfermarkt/.venv/bin/python -m ingestion.cli --config /opt/transfermarkt/config/assets.yml inspect-source --asset competitions
 ```
 
-El último comando ejecuta `SELECT 1`, crea o verifica los objetos Bronze y requiere credenciales Snowflake válidas. Los mensajes de la aplicación redactan la contraseña si una excepción llegara a contenerla.
+Un error HTTP nunca se interpreta como “sin cambios”. La fuente estaba declarada pausada por el proveedor al verificarse este repositorio; si continúa igual, el pipeline registra skips reales y no inventa novedades.
 
-## 7. Semántica operativa
-
-- El SHA-256 se calcula sobre los bytes del `.csv.gz` original. Un checksum ya `SUCCESS` produce `SKIPPED`; un contenido distinto es una nueva versión.
-- El original queda en `original/<asset>/<sha256>/`; los NDJSON de carga quedan separados en `prepared/<asset>/<sha256>/<run_id>/`.
-- `COPY INTO` carga una temporal. RAW y el control `SUCCESS` se publican en la misma transacción. Ante fallo se hace rollback y el intento queda `FAILED`.
-- Las vistas `*_LATEST` eligen solo la versión `SUCCESS` más reciente. Su grain es una fila original del CSV dentro de ese snapshot.
-- Los perfiles como `players` representan estado reciente; los datasets de eventos/valoraciones contienen el historial incluido por el snapshot, no snapshots históricos del proveedor.
-- Los IDs de origen permanecen textuales dentro de `RAW_RECORD` para joins posteriores.
-
-## Cobertura observada de la fuente
-
-El 2 de octubre de 2026 se comprobaron directamente las 12 URLs de `config/assets.yml`: todas respondieron `200`, eran gzip legible y sus encabezados coincidían con el catálogo. El README oficial mantiene las actualizaciones pausadas e informa: `games` hasta 2026-07-06, `appearances` hasta 2026-06-28 y `player_valuations` hasta 2026-06-12. Descargar hoy no vuelve actuales los eventos ni prueba que una fila estaba disponible en una fecha histórica.
+Referencias: [Schedule y `recoverMissedSchedules`](https://kestra.io/docs/workflow-components/triggers/schedule-trigger), [backfill finito](https://kestra.io/docs/concepts/backfill), [retries de Kestra](https://kestra.io/docs/workflow-components/retries), [conector Python Snowflake](https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-connect).

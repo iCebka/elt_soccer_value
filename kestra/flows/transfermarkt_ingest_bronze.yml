@@ -1,6 +1,6 @@
 id: transfermarkt_ingest_bronze
 namespace: football.transfermarkt
-description: Coordinate complete Transfermarkt snapshots and publish an audited Bronze batch.
+description: Probe current Transfermarkt snapshots and conditionally publish an audited Bronze batch.
 
 inputs:
   - id: assets
@@ -48,11 +48,14 @@ tasks:
       TM_BATCH_ID: "{{ execution.id }}"
       TM_MODE: "{{ inputs.mode }}"
       TM_ASSETS: '{{ inputs.assets | toJson }}'
+      TM_LOGICAL_DATE: "{{ trigger.date ?? execution.startDate }}"
+      TM_TRIGGER_SOURCE: "{{ trigger.id ?? 'manual' }}"
     commands:
       - >-
         /opt/transfermarkt/.venv/bin/python -m ingestion.cli
         --config /opt/transfermarkt/config/assets.yml batch-start
         --batch-id "$TM_BATCH_ID" --mode "$TM_MODE" --assets "$TM_ASSETS"
+        --logical-date "$TM_LOGICAL_DATE" --trigger-source "$TM_TRIGGER_SOURCE"
 
   - id: ingest_assets
     type: io.kestra.plugin.core.flow.Loop
@@ -69,6 +72,8 @@ tasks:
           asset: "{{ item.value }}"
           batch_id: "{{ execution.id }}"
           mode: "{{ inputs.mode }}"
+          logical_date: "{{ trigger.date ?? execution.startDate }}"
+          trigger_source: "{{ trigger.id ?? 'manual' }}"
 
   - id: finalize
     type: io.kestra.plugin.scripts.python.Commands
@@ -114,10 +119,11 @@ outputs:
     type: INT
     value: "{{ outputs.finalize.vars.rows_loaded ??? 0 }}"
 triggers:
-  - id: weekly_monday
+  - id: monthly_first_day
     type: io.kestra.plugin.core.trigger.Schedule
-    cron: "0 3 * * 1"
+    cron: "0 6 1 * *"
     timezone: America/Guayaquil
+    recoverMissedSchedules: NONE
     disabled: true
     inputs:
       mode: incremental

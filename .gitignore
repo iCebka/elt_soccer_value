@@ -35,6 +35,9 @@ TestResults.xml
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.test-tmp/
+.uv-cache/
+.uv-python/
 .venv/
 htmlcov/
 .coverage
