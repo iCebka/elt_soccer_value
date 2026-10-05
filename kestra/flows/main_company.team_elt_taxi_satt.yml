@@ -1,0 +1,226 @@
+id: elt_taxi_satt
+namespace: company.team
+
+tasks:
+  - id: create_warehouse
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    sql: |
+      CREATE WAREHOUSE IF NOT EXISTS {{ envs.snowflake_warehouse }}
+      WAREHOUSE_SIZE = 'XSMALL'
+      AUTO_SUSPEND = 60
+      AUTO_RESUME = TRUE
+
+  - id: create_database
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE DATABASE IF NOT EXISTS {{ envs.snowflake_database }}
+
+  - id: create_raw_schema
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE SCHEMA IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}
+
+  - id: create_bronze_schema
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE SCHEMA IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}
+
+  - id: create_silver_schema
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE SCHEMA IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_silver_schema }}
+
+  - id: create_gold_schema
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE SCHEMA IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_gold_schema }}
+
+  - id: create_stage
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE STAGE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}.TAXI_STAGE
+
+  - id: create_parquet_format
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE FILE FORMAT IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}.PARQUET_FORMAT
+      TYPE = PARQUET
+
+  - id: create_raw_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}.YELLOW_TAXI_TRIPS (
+        raw_record VARIANT,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: ingest_periods
+    type: io.kestra.plugin.core.flow.ForEach
+    values:
+      - "2025-01"
+      - "2025-02"
+      - "2025-03"
+      - "2025-04"
+      - "2025-05"
+      - "2025-06"
+      - "2025-07"
+      - "2025-08"
+      - "2025-09"
+      - "2025-10"
+      - "2025-11"
+      - "2025-12"
+      - "2026-01"
+      - "2026-02"
+      - "2026-03"
+      - "2026-04"
+      - "2026-05"
+      - "2026-06"
+      - "2026-07"
+
+    concurrencyLimit: 1
+
+    tasks:
+      - id: extract
+        type: io.kestra.plugin.core.http.Download
+        uri: "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{{ taskrun.value }}.parquet"
+
+      - id: upload_to_stage
+        type: io.kestra.plugin.jdbc.snowflake.Upload
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+
+        from: "{{ outputs.extract[taskrun.value].uri }}"
+
+        stageName: "@{{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}.TAXI_STAGE"
+
+        fileName: "yellow_tripdata_{{ taskrun.value }}.parquet"
+        prefix: "{{ taskrun.value | replace({'-':'/'}) }}"
+        compress: false
+
+      - id: load_raw
+        type: io.kestra.plugin.jdbc.snowflake.Query
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+
+        sql: |
+          MERGE INTO
+          {{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}.YELLOW_TAXI_TRIPS AS target
+
+          USING (
+            SELECT
+              t.$1 AS raw_record,
+              METADATA$FILENAME AS _source_file,
+              METADATA$FILE_ROW_NUMBER AS _source_row_number,
+              CURRENT_TIMESTAMP() AS _ingested_at
+
+            FROM
+              @{{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}.TAXI_STAGE/{{ taskrun.value | replace({'-':'/'}) }}
+              (
+                FILE_FORMAT =>
+                '{{ envs.snowflake_database }}.{{ envs.snowflake_raw_schema }}.PARQUET_FORMAT'
+              ) t
+          ) AS source
+
+          ON target._source_file = source._source_file
+          AND target._source_row_number = source._source_row_number
+
+          WHEN NOT MATCHED THEN INSERT (
+            raw_record,
+            _source_file,
+            _source_row_number,
+            _ingested_at
+          )
+          VALUES (
+            source.raw_record,
+            source._source_file,
+            source._source_row_number,
+            source._ingested_at
+          )
+
+      - id: delete_download
+        type: io.kestra.plugin.core.storage.Delete
+        uri: "{{ outputs.extract[taskrun.value].uri }}"
+
+  - id: dbt_build
+    type: io.kestra.plugin.dbt.cli.DbtCLI
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    profiles: |
+      default:
+        target: prod
+        outputs:
+          prod:
+            type: snowflake
+            account: "{{ envs.snowflake_account }}"
+            user: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+            database: "{{ envs.snowflake_database }}"
+            schema: "{{ envs.snowflake_raw_schema }}"
+            threads: 8
+    commands:
+      - >-
+        dbt build
+        --project-dir /workspace/project
+        --target-path /tmp/dbt-target-{{ execution.id }}
+        --log-path /tmp/dbt-logs-{{ execution.id }}

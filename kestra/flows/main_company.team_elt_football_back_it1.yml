@@ -1,0 +1,721 @@
+id: backfill_football_it1
+namespace: company.team
+
+description: |
+  Historical backfill flow for the Transfermarkt pipeline.
+
+  Selected Bronze assets are reloaded from the current upstream snapshots.
+
+  Assets with a direct business-date column replace only the requested
+  historical interval.
+
+  Assets without a direct temporal dimension are reloaded as complete
+  snapshots.
+
+  After any Bronze modification, Silver, Gold, and the Spark OBT are rebuilt
+  completely.
+
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+
+inputs:
+
+  - id: assets
+    type: MULTISELECT
+    values:
+      - competitions
+      - clubs
+      - players
+      - games
+      - appearances
+      - player_valuations
+      - transfers
+      - club_games
+      - game_events
+      - game_lineups
+      - countries
+      - national_teams
+
+    defaults:
+      - competitions
+      - clubs
+      - players
+      - games
+      - appearances
+      - player_valuations
+      - transfers
+      - club_games
+      - game_events
+      - game_lineups
+      - countries
+      - national_teams
+
+
+  - id: backfill_start
+    type: DATE
+    required: true
+
+
+  - id: backfill_end
+    type: DATE
+    required: true
+
+
+tasks:
+
+  # ---------------------------------------------------------------------------
+  # Backfill information
+  # ---------------------------------------------------------------------------
+
+  - id: log_backfill_start
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      Starting football historical backfill.
+
+      Selected assets:
+      {{ inputs.assets }}
+
+      Requested temporal range:
+      {{ inputs.backfill_start }} -> {{ inputs.backfill_end }}
+
+      Temporal assets:
+        games
+        appearances
+        player_valuations
+        transfers
+        game_events
+        game_lineups
+
+      Selected non-temporal assets will be reloaded completely.
+
+
+  # ---------------------------------------------------------------------------
+  # Ingest selected snapshots into isolated load tables
+  # ---------------------------------------------------------------------------
+
+  - id: ingest_backfill_assets
+    type: io.kestra.plugin.core.flow.ForEach
+
+    values: "{{ inputs.assets }}"
+    concurrencyLimit: 1
+
+    tasks:
+
+      # -----------------------------------------------------------------------
+      # Download source asset
+      # -----------------------------------------------------------------------
+
+      - id: extract
+        type: io.kestra.plugin.core.http.Download
+
+        uri: "https://pub-e682421888d945d684bcae8890b0ec20.r2.dev/data/{{ taskrun.value }}.csv.gz"
+
+        retry:
+          type: exponential
+          interval: PT30S
+          maxInterval: PT2M
+          maxAttempts: 3
+          maxDuration: PT5M
+          warningOnRetry: true
+
+
+      # -----------------------------------------------------------------------
+      # Upload source asset to the existing Snowflake stage
+      # -----------------------------------------------------------------------
+
+      - id: upload_to_stage
+        type: io.kestra.plugin.jdbc.snowflake.Upload
+
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+
+        from: "{{ outputs.extract[taskrun.value].uri }}"
+
+        stageName: "@{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERMARKT_STAGE"
+
+        fileName: "{{ taskrun.value }}.csv.gz"
+        prefix: "backfill/{{ execution.id }}/"
+
+        compress: false
+
+        retry:
+          type: exponential
+          interval: PT30S
+          maxInterval: PT2M
+          maxAttempts: 3
+          maxDuration: PT5M
+          warningOnRetry: true
+
+
+      # -----------------------------------------------------------------------
+      # Create isolated load table
+      # -----------------------------------------------------------------------
+
+      - id: prepare_load_table
+        type: io.kestra.plugin.jdbc.snowflake.Query
+
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+
+        sql: |
+          CREATE OR REPLACE TABLE
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_LOAD
+          LIKE
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}
+
+
+      # -----------------------------------------------------------------------
+      # COPY complete upstream snapshot into isolated load table
+      # -----------------------------------------------------------------------
+
+      - id: load_snapshot
+        type: io.kestra.plugin.jdbc.snowflake.Query
+
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+
+        sql: |
+          COPY INTO
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_LOAD
+
+          FROM
+          @{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERMARKT_STAGE/backfill/{{ execution.id }}/
+
+          FILES = ('{{ taskrun.value }}.csv.gz')
+
+          FILE_FORMAT = (
+            FORMAT_NAME =
+            '{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.CSV_GZIP_FORMAT'
+          )
+
+          MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+
+          INCLUDE_METADATA = (
+            _source_file = METADATA$FILENAME,
+            _source_row_number = METADATA$FILE_ROW_NUMBER,
+            _ingested_at = METADATA$START_SCAN_TIME
+          )
+
+          ON_ERROR = ABORT_STATEMENT
+
+
+      # =======================================================================
+      # TEMPORAL ASSETS USING `date`
+      #
+      # games
+      # appearances
+      # player_valuations
+      # game_events
+      # game_lineups
+      # =======================================================================
+
+      - id: publish_date_asset
+        type: io.kestra.plugin.core.flow.If
+
+        condition: >-
+          {{
+            taskrun.value == 'games'
+            or taskrun.value == 'appearances'
+            or taskrun.value == 'player_valuations'
+            or taskrun.value == 'game_events'
+            or taskrun.value == 'game_lineups'
+          }}
+
+        then:
+
+          # -------------------------------------------------------------------
+          # Create complete candidate snapshot
+          # -------------------------------------------------------------------
+
+          - id: create_merged_table
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              CREATE OR REPLACE TABLE
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_MERGED
+              LIKE
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}
+
+
+          # -------------------------------------------------------------------
+          # Preserve rows outside requested interval
+          # -------------------------------------------------------------------
+
+          - id: preserve_rows_outside_range
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              INSERT INTO
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_MERGED
+
+              SELECT *
+              FROM
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}
+
+              WHERE TRY_TO_DATE(date) IS NULL
+                 OR TRY_TO_DATE(date) < TO_DATE('{{ inputs.backfill_start }}')
+                 OR TRY_TO_DATE(date) > TO_DATE('{{ inputs.backfill_end }}')
+
+
+          # -------------------------------------------------------------------
+          # Insert refreshed rows inside requested interval
+          # -------------------------------------------------------------------
+
+          - id: insert_backfill_range
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              INSERT INTO
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_MERGED
+
+              SELECT *
+              FROM
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_LOAD
+
+              WHERE TRY_TO_DATE(date)
+              BETWEEN TO_DATE('{{ inputs.backfill_start }}')
+                  AND TO_DATE('{{ inputs.backfill_end }}')
+
+
+          # -------------------------------------------------------------------
+          # Atomically publish the complete candidate table
+          # -------------------------------------------------------------------
+
+          - id: swap_backfilled_snapshot
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              ALTER TABLE
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}
+
+              SWAP WITH
+
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_MERGED
+
+
+          # -------------------------------------------------------------------
+          # _BACKFILL_MERGED now contains the old Bronze table
+          # -------------------------------------------------------------------
+
+          - id: drop_old_snapshot
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              DROP TABLE IF EXISTS
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_MERGED
+
+
+          - id: drop_load_table
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              DROP TABLE IF EXISTS
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_LOAD
+
+
+      # =======================================================================
+      # TRANSFERS
+      #
+      # Same strategy, but its business date is transfer_date.
+      # =======================================================================
+
+      - id: publish_transfers
+        type: io.kestra.plugin.core.flow.If
+
+        condition: "{{ taskrun.value == 'transfers' }}"
+
+        then:
+
+          - id: create_merged_table
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              CREATE OR REPLACE TABLE
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers_BACKFILL_MERGED
+              LIKE
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers
+
+
+          - id: preserve_rows_outside_range
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              INSERT INTO
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers_BACKFILL_MERGED
+
+              SELECT *
+              FROM
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers
+
+              WHERE TRY_TO_DATE(transfer_date) IS NULL
+                 OR TRY_TO_DATE(transfer_date) < TO_DATE('{{ inputs.backfill_start }}')
+                 OR TRY_TO_DATE(transfer_date) > TO_DATE('{{ inputs.backfill_end }}')
+
+
+          - id: insert_backfill_range
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              INSERT INTO
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers_BACKFILL_MERGED
+
+              SELECT *
+              FROM
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers_BACKFILL_LOAD
+
+              WHERE TRY_TO_DATE(transfer_date)
+              BETWEEN TO_DATE('{{ inputs.backfill_start }}')
+                  AND TO_DATE('{{ inputs.backfill_end }}')
+
+
+          - id: swap_backfilled_snapshot
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              ALTER TABLE
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers
+
+              SWAP WITH
+
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers_BACKFILL_MERGED
+
+
+          - id: drop_old_snapshot
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              DROP TABLE IF EXISTS
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers_BACKFILL_MERGED
+
+
+          - id: drop_load_table
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              DROP TABLE IF EXISTS
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.transfers_BACKFILL_LOAD
+
+
+      # =======================================================================
+      # NON-TEMPORAL ASSETS
+      #
+      # competitions
+      # clubs
+      # players
+      # club_games
+      # countries
+      # national_teams
+      #
+      # No artificial time filter is introduced.
+      # The complete source snapshot is published.
+      # =======================================================================
+
+      - id: publish_non_temporal_asset
+        type: io.kestra.plugin.core.flow.If
+
+        condition: >-
+          {{
+            taskrun.value == 'competitions'
+            or taskrun.value == 'clubs'
+            or taskrun.value == 'players'
+            or taskrun.value == 'club_games'
+            or taskrun.value == 'countries'
+            or taskrun.value == 'national_teams'
+          }}
+
+        then:
+
+          - id: swap_full_snapshot
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              ALTER TABLE
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}
+
+              SWAP WITH
+
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_LOAD
+
+
+          # After SWAP, _BACKFILL_LOAD contains the old production snapshot.
+
+          - id: drop_old_snapshot
+            type: io.kestra.plugin.jdbc.snowflake.Query
+
+            url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+            username: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+
+            sql: |
+              DROP TABLE IF EXISTS
+              {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_BACKFILL_LOAD
+
+
+      # -----------------------------------------------------------------------
+      # Cleanup stage and Kestra storage
+      # -----------------------------------------------------------------------
+
+      - id: remove_staged_file
+        type: io.kestra.plugin.jdbc.snowflake.Query
+
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+
+        sql: |
+          REMOVE
+          @{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERMARKT_STAGE/backfill/{{ execution.id }}/{{ taskrun.value }}.csv.gz
+
+
+      - id: delete_download
+        type: io.kestra.plugin.core.storage.Delete
+
+        uri: "{{ outputs.extract[taskrun.value].uri }}"
+
+
+  # ===========================================================================
+  # FULL DOWNSTREAM REBUILD
+  #
+  # Any change to Bronze invalidates the derived analytical layers.
+  # Silver, Gold, and OBT are therefore always rebuilt completely.
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Silver
+  # ---------------------------------------------------------------------------
+
+  - id: dbt_build_silver
+    type: io.kestra.plugin.dbt.cli.DbtCLI
+
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    profiles: |
+      football:
+        target: prod
+        outputs:
+          prod:
+            type: snowflake
+            account: "{{ envs.snowflake_account }}"
+            user: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+            database: "{{ envs.snowflake_database }}"
+            schema: "{{ envs.snowflake_silver_schema }}"
+            threads: 8
+
+    commands:
+      - >-
+        dbt build
+        --project-dir /workspace/project/dbt
+        --select path:models/silver
+        --exclude path:tests/gold
+        --target-path /tmp/dbt-backfill-target-{{ execution.id }}
+        --log-path /tmp/dbt-backfill-logs-{{ execution.id }}
+
+
+  # ---------------------------------------------------------------------------
+  # Gold
+  # ---------------------------------------------------------------------------
+
+  - id: dbt_build_gold
+    type: io.kestra.plugin.dbt.cli.DbtCLI
+
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    profiles: |
+      football:
+        target: prod
+        outputs:
+          prod:
+            type: snowflake
+            account: "{{ envs.snowflake_account }}"
+            user: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+            database: "{{ envs.snowflake_database }}"
+            schema: "{{ envs.snowflake_gold_schema }}"
+            threads: 8
+
+    commands:
+      - >-
+        dbt build
+        --project-dir /workspace/project/dbt
+        --select path:models/gold path:tests/gold
+        --target-path /tmp/dbt-backfill-gold-target-{{ execution.id }}
+        --log-path /tmp/dbt-backfill-gold-logs-{{ execution.id }}
+
+
+  # ---------------------------------------------------------------------------
+  # Spark OBT
+  # ---------------------------------------------------------------------------
+
+  - id: spark_build_obt
+    type: io.kestra.plugin.scripts.shell.Commands
+
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    commands:
+      - |
+        set -eu
+
+        export JAVA_HOME=/opt/java17
+
+        SPARK_MASTER="${SPARK_MASTER:-local[4]}"
+        SPARK_DRIVER_MEMORY="${SPARK_DRIVER_MEMORY:-2g}"
+
+        echo "[KESTRA] Rebuilding GOLD.OBT_FOOTBALL_EVENTS after Bronze backfill"
+        echo "[KESTRA] Spark master: ${SPARK_MASTER}"
+        echo "[KESTRA] Spark driver memory: ${SPARK_DRIVER_MEMORY}"
+
+        spark-submit \
+          --master "${SPARK_MASTER}" \
+          --driver-memory "${SPARK_DRIVER_MEMORY}" \
+          --packages "net.snowflake:spark-snowflake_2.12:3.2.2-spark_3.5,net.snowflake:snowflake-jdbc:4.0.2" \
+          --conf spark.jars.ivy=/tmp/.ivy2 \
+          --conf 'spark.driver.extraJavaOptions=-Daws.java.v1.disableDeprecationAnnouncement=true' \
+          --conf 'spark.executor.extraJavaOptions=-Daws.java.v1.disableDeprecationAnnouncement=true' \
+          /workspace/project/spark/obt_football_events.py \
+          2>&1
+
+
+  # ---------------------------------------------------------------------------
+  # Successful completion
+  # ---------------------------------------------------------------------------
+
+  - id: log_backfill_success
+    type: io.kestra.plugin.core.log.Log
+
+    message: |
+      Football historical backfill completed successfully.
+
+      Selected assets:
+      {{ inputs.assets }}
+
+      Requested temporal range:
+      {{ inputs.backfill_start }} -> {{ inputs.backfill_end }}
+
+      Bronze was updated using the selected asset semantics.
+      Silver, Gold, and the Spark OBT were fully rebuilt.
+
+
+errors:
+
+  - id: log_backfill_failure
+    type: io.kestra.plugin.core.log.Log
+    level: ERROR
+
+    message: |
+      Football historical backfill failed.
+
+      Flow: {{ flow.namespace }}.{{ flow.id }}
+      Execution: {{ execution.id }}
+
+      Selected assets:
+      {{ inputs.assets }}
+
+      Requested range:
+      {{ inputs.backfill_start }} -> {{ inputs.backfill_end }}
+
+      Failed tasks:
+      {{ tasksWithState('FAILED') }}
+
+      Error logs:
+      {{ errorLogs() }}

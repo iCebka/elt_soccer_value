@@ -1,0 +1,723 @@
+id: elt_football_it1
+namespace: company.team
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+triggers:
+  - id: source_refresh
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 8 * * 3,6"
+    timezone: America/Guayaquil
+    allowConcurrent: false
+    recoverMissedSchedules: LAST
+
+inputs:
+  - id: assets
+    type: MULTISELECT
+    values:
+      - competitions
+      - clubs
+      - players
+      - games
+      - appearances
+      - player_valuations
+      - transfers
+      - club_games
+      - game_events
+      - game_lineups
+      - countries
+      - national_teams
+    defaults:
+      - competitions
+      - clubs
+      - players
+      - games
+      - appearances
+      - player_valuations
+      - transfers
+      - club_games
+      - game_events
+      - game_lineups
+      - countries
+      - national_teams
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+
+  - id: create_warehouse
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    sql: |
+      CREATE WAREHOUSE IF NOT EXISTS {{ envs.snowflake_warehouse }}
+      WAREHOUSE_SIZE = 'XSMALL'
+      AUTO_SUSPEND = 60
+      AUTO_RESUME = TRUE
+
+  - id: create_database
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE DATABASE IF NOT EXISTS {{ envs.snowflake_database }}
+
+  - id: create_bronze_schema
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE SCHEMA IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}
+
+  - id: create_silver_schema
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE SCHEMA IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_silver_schema }}
+
+  - id: create_gold_schema
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE SCHEMA IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_gold_schema }}
+
+  # ---------------------------------------------------------------------------
+  # Bronze landing infrastructure
+  # ---------------------------------------------------------------------------
+
+  - id: create_stage
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE STAGE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERMARKT_STAGE
+
+  - id: create_csv_format
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE OR REPLACE FILE FORMAT
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.CSV_GZIP_FORMAT
+      TYPE = CSV
+      COMPRESSION = GZIP
+      PARSE_HEADER = TRUE
+      FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+      EMPTY_FIELD_AS_NULL = TRUE
+      NULL_IF = ('')
+      ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+
+  # ---------------------------------------------------------------------------
+  # Bronze tables
+  # ---------------------------------------------------------------------------
+
+  - id: create_competitions_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.COMPETITIONS (
+        competition_id VARCHAR,
+        competition_code VARCHAR,
+        name VARCHAR,
+        sub_type VARCHAR,
+        type VARCHAR,
+        country_id VARCHAR,
+        country_name VARCHAR,
+        domestic_league_code VARCHAR,
+        confederation VARCHAR,
+        total_clubs VARCHAR,
+        url VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_clubs_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.CLUBS (
+        club_id VARCHAR,
+        club_code VARCHAR,
+        name VARCHAR,
+        domestic_competition_id VARCHAR,
+        total_market_value VARCHAR,
+        squad_size VARCHAR,
+        average_age VARCHAR,
+        foreigners_number VARCHAR,
+        foreigners_percentage VARCHAR,
+        national_team_players VARCHAR,
+        stadium_name VARCHAR,
+        stadium_seats VARCHAR,
+        net_transfer_record VARCHAR,
+        coach_name VARCHAR,
+        last_season VARCHAR,
+        filename VARCHAR,
+        url VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_players_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.PLAYERS (
+        player_id VARCHAR,
+        first_name VARCHAR,
+        last_name VARCHAR,
+        name VARCHAR,
+        last_season VARCHAR,
+        current_club_id VARCHAR,
+        player_code VARCHAR,
+        country_of_birth VARCHAR,
+        city_of_birth VARCHAR,
+        country_of_citizenship VARCHAR,
+        date_of_birth VARCHAR,
+        sub_position VARCHAR,
+        position VARCHAR,
+        foot VARCHAR,
+        height_in_cm VARCHAR,
+        contract_expiration_date VARCHAR,
+        agent_name VARCHAR,
+        image_url VARCHAR,
+        international_caps VARCHAR,
+        international_goals VARCHAR,
+        current_national_team_id VARCHAR,
+        url VARCHAR,
+        current_club_domestic_competition_id VARCHAR,
+        current_club_name VARCHAR,
+        market_value_in_eur VARCHAR,
+        highest_market_value_in_eur VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_games_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.GAMES (
+        game_id VARCHAR,
+        competition_id VARCHAR,
+        season VARCHAR,
+        round VARCHAR,
+        date VARCHAR,
+        home_club_id VARCHAR,
+        away_club_id VARCHAR,
+        home_club_goals VARCHAR,
+        away_club_goals VARCHAR,
+        home_club_position VARCHAR,
+        away_club_position VARCHAR,
+        home_club_manager_name VARCHAR,
+        away_club_manager_name VARCHAR,
+        stadium VARCHAR,
+        attendance VARCHAR,
+        referee VARCHAR,
+        url VARCHAR,
+        home_club_formation VARCHAR,
+        away_club_formation VARCHAR,
+        home_club_name VARCHAR,
+        away_club_name VARCHAR,
+        aggregate VARCHAR,
+        competition_type VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_appearances_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.APPEARANCES (
+        appearance_id VARCHAR,
+        game_id VARCHAR,
+        player_id VARCHAR,
+        player_club_id VARCHAR,
+        player_current_club_id VARCHAR,
+        date VARCHAR,
+        player_name VARCHAR,
+        competition_id VARCHAR,
+        yellow_cards VARCHAR,
+        red_cards VARCHAR,
+        goals VARCHAR,
+        assists VARCHAR,
+        minutes_played VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_player_valuations_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.PLAYER_VALUATIONS (
+        player_id VARCHAR,
+        date VARCHAR,
+        market_value_in_eur VARCHAR,
+        current_club_name VARCHAR,
+        current_club_id VARCHAR,
+        player_club_domestic_competition_id VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_transfers_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERS (
+        player_id VARCHAR,
+        transfer_date VARCHAR,
+        transfer_season VARCHAR,
+        from_club_id VARCHAR,
+        to_club_id VARCHAR,
+        from_club_name VARCHAR,
+        to_club_name VARCHAR,
+        transfer_fee VARCHAR,
+        market_value_in_eur VARCHAR,
+        player_name VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_club_games_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.CLUB_GAMES (
+        game_id VARCHAR,
+        club_id VARCHAR,
+        own_goals VARCHAR,
+        own_position VARCHAR,
+        own_manager_name VARCHAR,
+        opponent_id VARCHAR,
+        opponent_goals VARCHAR,
+        opponent_position VARCHAR,
+        opponent_manager_name VARCHAR,
+        hosting VARCHAR,
+        is_win VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_game_events_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.GAME_EVENTS (
+        game_event_id VARCHAR,
+        date VARCHAR,
+        game_id VARCHAR,
+        minute VARCHAR,
+        type VARCHAR,
+        club_id VARCHAR,
+        club_name VARCHAR,
+        player_id VARCHAR,
+        description VARCHAR,
+        player_in_id VARCHAR,
+        player_assist_id VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_game_lineups_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.GAME_LINEUPS (
+        game_lineups_id VARCHAR,
+        date VARCHAR,
+        game_id VARCHAR,
+        player_id VARCHAR,
+        club_id VARCHAR,
+        player_name VARCHAR,
+        type VARCHAR,
+        position VARCHAR,
+        number VARCHAR,
+        team_captain VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_countries_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.COUNTRIES (
+        country_id VARCHAR,
+        country_name VARCHAR,
+        country_code VARCHAR,
+        confederation VARCHAR,
+        total_clubs VARCHAR,
+        total_players VARCHAR,
+        average_age VARCHAR,
+        url VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  - id: create_national_teams_table
+    type: io.kestra.plugin.jdbc.snowflake.Query
+    url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+    username: "{{ envs.snowflake_user }}"
+    password: "{{ envs.snowflake_password }}"
+    role: "{{ envs.snowflake_role }}"
+    warehouse: "{{ envs.snowflake_warehouse }}"
+    sql: |
+      CREATE TABLE IF NOT EXISTS
+      {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.NATIONAL_TEAMS (
+        national_team_id VARCHAR,
+        name VARCHAR,
+        team_code VARCHAR,
+        country_id VARCHAR,
+        country_name VARCHAR,
+        country_code VARCHAR,
+        confederation VARCHAR,
+        team_image_url VARCHAR,
+        squad_size VARCHAR,
+        average_age VARCHAR,
+        foreigners_number VARCHAR,
+        foreigners_percentage VARCHAR,
+        total_market_value VARCHAR,
+        coach_name VARCHAR,
+        fifa_ranking VARCHAR,
+        last_season VARCHAR,
+        url VARCHAR,
+        _source_file VARCHAR,
+        _source_row_number NUMBER,
+        _ingested_at TIMESTAMP_TZ
+      )
+
+  # ---------------------------------------------------------------------------
+  # Ingest selected snapshots
+  # ---------------------------------------------------------------------------
+
+  - id: ingest_assets
+    type: io.kestra.plugin.core.flow.ForEach
+    values: "{{ inputs.assets }}"
+    concurrencyLimit: 1
+
+    tasks:
+      - id: extract
+        type: io.kestra.plugin.core.http.Download
+        uri: "https://pub-e682421888d945d684bcae8890b0ec20.r2.dev/data/{{ taskrun.value }}.csv.gz"
+        retry:
+          type: exponential
+          interval: PT30S
+          maxInterval: PT2M
+          maxAttempts: 3
+          maxDuration: PT5M
+          warningOnRetry: true
+
+      - id: upload_to_stage
+        type: io.kestra.plugin.jdbc.snowflake.Upload
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+        from: "{{ outputs.extract[taskrun.value].uri }}"
+
+        stageName: "@{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERMARKT_STAGE"
+
+        fileName: "{{ taskrun.value }}.csv.gz"
+        prefix: "{{ execution.id }}/"
+        compress: false
+        retry:
+          type: exponential
+          interval: PT30S
+          maxInterval: PT2M
+          maxAttempts: 3
+          maxDuration: PT5M
+          warningOnRetry: true
+        
+
+      - id: prepare_load_table
+        type: io.kestra.plugin.jdbc.snowflake.Query
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+        sql: |
+          CREATE OR REPLACE TABLE
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_LOAD
+          LIKE
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}
+
+      - id: load_snapshot
+        type: io.kestra.plugin.jdbc.snowflake.Query
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+        sql: |
+          COPY INTO
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_LOAD
+
+          FROM
+          @{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERMARKT_STAGE/{{ execution.id }}/
+
+          FILES = ('{{ taskrun.value }}.csv.gz')
+
+          FILE_FORMAT = (
+            FORMAT_NAME = '{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.CSV_GZIP_FORMAT'
+          )
+
+          MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+
+          INCLUDE_METADATA = (
+            _source_file = METADATA$FILENAME,
+            _source_row_number = METADATA$FILE_ROW_NUMBER,
+            _ingested_at = METADATA$START_SCAN_TIME
+          )
+
+          ON_ERROR = ABORT_STATEMENT
+
+      - id: publish_snapshot
+        type: io.kestra.plugin.jdbc.snowflake.Query
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+        sql: |
+          ALTER TABLE
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}
+          SWAP WITH
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_LOAD
+
+      - id: drop_old_snapshot
+        type: io.kestra.plugin.jdbc.snowflake.Query
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+        sql: |
+          DROP TABLE IF EXISTS
+          {{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.{{ taskrun.value }}_LOAD
+
+      - id: remove_staged_file
+        type: io.kestra.plugin.jdbc.snowflake.Query
+        url: jdbc:snowflake://{{ envs.snowflake_account }}.snowflakecomputing.com
+        username: "{{ envs.snowflake_user }}"
+        password: "{{ envs.snowflake_password }}"
+        role: "{{ envs.snowflake_role }}"
+        warehouse: "{{ envs.snowflake_warehouse }}"
+        sql: |
+          REMOVE
+          @{{ envs.snowflake_database }}.{{ envs.snowflake_bronze_schema }}.TRANSFERMARKT_STAGE/{{ execution.id }}/{{ taskrun.value }}.csv.gz
+      
+      - id: delete_download
+        type: io.kestra.plugin.core.storage.Delete
+        uri: "{{ outputs.extract[taskrun.value].uri }}"
+
+  # ---------------------------------------------------------------------------
+  # Silver transformations and tests
+  # ---------------------------------------------------------------------------
+
+  - id: dbt_build_silver
+    type: io.kestra.plugin.dbt.cli.DbtCLI
+
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    profiles: |
+      football:
+        target: prod
+        outputs:
+          prod:
+            type: snowflake
+            account: "{{ envs.snowflake_account }}"
+            user: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+            database: "{{ envs.snowflake_database }}"
+            schema: "{{ envs.snowflake_silver_schema }}"
+            threads: 8
+
+    commands:
+      - >-
+        dbt build
+        --project-dir /workspace/project/dbt
+        --select path:models/silver
+        --exclude path:tests/gold
+        --target-path /tmp/dbt-target-{{ execution.id }}
+        --log-path /tmp/dbt-logs-{{ execution.id }}
+
+  # --------
+  # Gold
+  # --------
+
+  - id: dbt_build_gold
+    type: io.kestra.plugin.dbt.cli.DbtCLI
+
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    profiles: |
+      football:
+        target: prod
+        outputs:
+          prod:
+            type: snowflake
+            account: "{{ envs.snowflake_account }}"
+            user: "{{ envs.snowflake_user }}"
+            password: "{{ envs.snowflake_password }}"
+            role: "{{ envs.snowflake_role }}"
+            warehouse: "{{ envs.snowflake_warehouse }}"
+            database: "{{ envs.snowflake_database }}"
+            schema: "{{ envs.snowflake_gold_schema }}"
+            threads: 8
+
+    commands:
+      - >-
+        dbt build
+        --project-dir /workspace/project/dbt
+        --select path:models/gold path:tests/gold
+        --target-path /tmp/dbt-gold-target-{{ execution.id }}
+        --log-path /tmp/dbt-gold-logs-{{ execution.id }}
+
+  # ---------------------------------------------------------------------------
+  # OBT with Spark
+  # ---------------------------------------------------------------------------
+
+  - id: spark_build_obt
+    type: io.kestra.plugin.scripts.shell.Commands
+
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    commands:
+      - |
+        set -eu
+
+        export JAVA_HOME=/opt/java17
+
+        SPARK_MASTER="${SPARK_MASTER:-local[4]}"
+        SPARK_DRIVER_MEMORY="${SPARK_DRIVER_MEMORY:-2g}"
+
+        echo "[KESTRA] Building GOLD.OBT_FOOTBALL_EVENTS with Spark"
+        echo "[KESTRA] Spark master: ${SPARK_MASTER}"
+        echo "[KESTRA] Spark driver memory: ${SPARK_DRIVER_MEMORY}"
+
+        spark-submit \
+          --master "${SPARK_MASTER}" \
+          --driver-memory "${SPARK_DRIVER_MEMORY}" \
+          --packages "net.snowflake:spark-snowflake_2.12:3.2.2-spark_3.5,net.snowflake:snowflake-jdbc:4.0.2" \
+          --conf spark.jars.ivy=/tmp/.ivy2 \
+          --conf 'spark.driver.extraJavaOptions=-Daws.java.v1.disableDeprecationAnnouncement=true' \
+          --conf 'spark.executor.extraJavaOptions=-Daws.java.v1.disableDeprecationAnnouncement=true' \
+          --conf spark.default.parallelism=4 \
+          --conf spark.sql.shuffle.partitions=8 \
+          /workspace/project/spark/obt_football_events.py \
+          2>&1
+
+errors:
+  - id: log_flow_failure
+    type: io.kestra.plugin.core.log.Log
+    level: ERROR
+    message: |
+      Football ELT pipeline failed.
+      Flow: {{ flow.namespace }}.{{ flow.id }}
+      Execution: {{ execution.id }}
+      Failed tasks: {{ tasksWithState('FAILED') }}
+      Error logs:
+      {{ errorLogs() }}
