@@ -15,7 +15,10 @@ El [dataset](https://github.com/dcaribou/transfermarkt-datasets) contiene valora
 - [Estructura del repositorio](#estructura-del-repositorio)
 - [Limitaciones](#limitaciones)
 
+
 ## Arquitectura
+
+![arch](docs/figs/architecture-elt.jpg)
 
 ```mermaid
 flowchart LR
@@ -55,6 +58,8 @@ flowchart LR
 Compose inicia dos servicios: `kestra` y `kestra-db`. La imagen personalizada de Kestra también contiene dbt y PySpark, que se ejecutan como procesos locales dentro del mismo contenedor. Esta implementación no tiene servicios independientes de Spark para el nodo maestro o los trabajadores. PostgreSQL almacena el estado de la orquestación; las tablas de fútbol se guardan en Snowflake.
 
 El [Dockerfile](Dockerfile) fija las versiones de Kestra en `v1.3.37`, `dbt-snowflake` en `1.12.1` y PySpark en `3.5.9`. dbt y Spark usan entornos virtuales de Python separados. Java 17 se instala en `/opt/java17` para Spark; Kestra conserva el entorno Java de su imagen base. La ejecución de Spark usa el conector de Snowflake `3.2.2-spark_3.5` para Scala 2.12 y Snowflake JDBC `4.0.2`.
+
+
 
 ## Ejecutar el pipeline
 
