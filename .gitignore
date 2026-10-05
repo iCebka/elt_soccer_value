@@ -1,54 +1,9 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
-.vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-files
-*.bclicense
-*.flf
-#Test results file
-TestResults.xml
-
-# Local configuration and credentials
 .env
-.env.*
-!.env.example
-# Defense in depth for credential files accidentally copied into the workspace.
-*.p8
-*.pem
-*.key
 
-# Python/test artifacts
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.test-tmp/
-.uv-cache/
-.uv-python/
-.venv/
-htmlcov/
-.coverage
-
-# Ingestion work files
-*.csv.gz
-*.ndjson
-tmp/
-work/
-
-# dbt artifacts and downloaded packages
-dbt/target/
-dbt/logs/
-dbt/dbt_packages/
+# Default .gitignore content added by dbt Cloud# you shouldn't commit these into source control
+# these are the default directory names, adjust/add to fit your needs
+target/
+dbt_packages/
+logs/
+# end dbt Cloud content
+dbt_internal_packages/

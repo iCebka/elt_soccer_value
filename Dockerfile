@@ -1,39 +1,59 @@
-FROM kestra/kestra:v2.0.4 AS base
+FROM kestra/kestra:v1.3.37
 
 USER root
 
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates curl python3 python3-pip python3-venv \
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+        python3-venv \
+        python3-pip \
+        git \
+        openjdk-17-jre-headless \
+        procps \
+        ca-certificates \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN /app/kestra plugins install io.kestra.plugin:plugin-script-python:1.13.0
+# ---------------------------------------------------------------------------
+# Java
+#
+# Kestra keeps using the Java runtime provided by its base image.
+# Java 17 is installed separately only for Spark.
+# ---------------------------------------------------------------------------
 
-COPY requirements.txt /opt/transfermarkt/requirements.txt
-RUN python3 -m venv /opt/transfermarkt/.venv \
-    && /opt/transfermarkt/.venv/bin/pip install --no-cache-dir -r /opt/transfermarkt/requirements.txt
+RUN ln -sfn \
+    "/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)" \
+    /opt/java17
 
-COPY config /opt/transfermarkt/config
-COPY src /opt/transfermarkt/src
+ENV SPARK_JAVA_HOME="/opt/java17"
 
-ENV PATH="/opt/transfermarkt/.venv/bin:${PATH}" \
-    PYTHONPATH="/opt/transfermarkt/src" \
-    PYTHONUNBUFFERED="1"
+# ---------------------------------------------------------------------------
+# dbt
+# ---------------------------------------------------------------------------
 
-WORKDIR /opt/transfermarkt
+RUN /usr/bin/python3 -m venv /opt/dbt-venv \
+    && /opt/dbt-venv/bin/pip install --no-cache-dir \
+        dbt-snowflake==1.12.1 \
+    && /opt/dbt-venv/bin/dbt --version \
+    && git --version
 
-FROM base AS test
-COPY requirements-dev.txt /opt/transfermarkt/requirements-dev.txt
-RUN /opt/transfermarkt/.venv/bin/pip install --no-cache-dir -r /opt/transfermarkt/requirements-dev.txt
-COPY pytest.ini /opt/transfermarkt/pytest.ini
-COPY tests /opt/transfermarkt/tests
-COPY dbt /opt/transfermarkt/dbt
-COPY docker /opt/transfermarkt/docker
-COPY kestra /opt/transfermarkt/kestra
-COPY scripts /opt/transfermarkt/scripts
-COPY docs /opt/transfermarkt/docs
-COPY docker-compose.yml /opt/transfermarkt/docker-compose.yml
-ENTRYPOINT ["/opt/transfermarkt/.venv/bin/python"]
-CMD ["-m", "pytest"]
+# ---------------------------------------------------------------------------
+# Spark / PySpark
+# ---------------------------------------------------------------------------
 
-FROM base AS runtime
+RUN /usr/bin/python3 -m venv /opt/spark-venv \
+    && /opt/spark-venv/bin/pip install --no-cache-dir \
+        pyspark==3.5.9
 
+ENV PYSPARK_PYTHON="/opt/spark-venv/bin/python"
+ENV PYSPARK_DRIVER_PYTHON="/opt/spark-venv/bin/python"
+
+# Do NOT override JAVA_HOME here.
+# Kestra must continue using the Java runtime from its base image.
+ENV PATH="/opt/spark-venv/bin:/opt/dbt-venv/bin:${PATH}"
+
+# Validate dbt and Spark independently.
+RUN dbt --version \
+    && git --version \
+    && JAVA_HOME=/opt/java17 /opt/spark-venv/bin/spark-submit --version

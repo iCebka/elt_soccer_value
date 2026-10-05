@@ -1,4 +1,0 @@
-# Keep core and adapter on the same minor line. Regenerate requirements.lock with:
-# uv pip compile docker/dbt/requirements.in --python-version 3.12 --generate-hashes -o docker/dbt/requirements.lock
-dbt-core==1.12.5
-dbt-snowflake==1.12.1
