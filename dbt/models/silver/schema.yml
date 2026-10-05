@@ -1,0 +1,473 @@
+version: 2
+
+models:
+
+  # ---------------------------------------------------------------------------
+  # APPEARANCES
+  # Grain: appearance_id
+  # ---------------------------------------------------------------------------
+
+  - name: appearances
+    description: >
+      Cleaned player appearance records. Grain: one source appearance.
+
+    columns:
+      - name: appearance_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: game_id
+        data_tests:
+          - not_null
+
+      - name: player_id
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # CLUB GAMES
+  # Grain: (game_id, club_id)
+  # ---------------------------------------------------------------------------
+
+  - name: club_games
+    description: >
+      Cleaned club-level match records. Grain: one club in one game.
+
+    data_tests:
+      - unique:
+          arguments:
+            column_name: >
+              (
+                to_varchar(game_id)
+                || '|'
+                || to_varchar(club_id)
+              )
+
+    columns:
+      - name: game_id
+        data_tests:
+          - not_null
+
+      - name: club_id
+        data_tests:
+          - not_null
+
+      - name: opponent_id
+        data_tests:
+          - not_null
+
+      - name: hosting
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - home
+                  - away
+
+
+  # ---------------------------------------------------------------------------
+  # CLUBS
+  # Grain: club_id
+  # ---------------------------------------------------------------------------
+
+  - name: clubs
+    description: >
+      Cleaned club snapshot. Grain: one club.
+
+    columns:
+      - name: club_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: club_code
+        data_tests:
+          - not_null
+          - unique
+
+      - name: name
+        data_tests:
+          - not_null
+
+      - name: last_season
+        data_tests:
+          - not_null
+
+      - name: filename
+        data_tests:
+          - not_null
+
+      - name: url
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # COMPETITIONS
+  # Grain: competition_id
+  # ---------------------------------------------------------------------------
+
+  - name: competitions
+    description: >
+      Cleaned competition snapshot. Grain: one competition.
+
+    columns:
+      - name: competition_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: competition_code
+        data_tests:
+          - not_null
+
+      - name: name
+        data_tests:
+          - not_null
+
+      - name: sub_type
+        data_tests:
+          - not_null
+
+      - name: type
+        data_tests:
+          - not_null
+
+      - name: confederation
+        data_tests:
+          - not_null
+
+      - name: url
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # COUNTRIES
+  # Grain: country_id
+  # ---------------------------------------------------------------------------
+
+  - name: countries
+    description: >
+      Cleaned country reference data. Grain: one country.
+
+    columns:
+      - name: country_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: country_name
+        data_tests:
+          - not_null
+          - unique
+
+      - name: country_code
+        data_tests:
+          - not_null
+          - unique
+
+      - name: confederation
+        data_tests:
+          - not_null
+
+      - name: url
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # GAME EVENTS
+  # Grain: game_event_id
+  # ---------------------------------------------------------------------------
+
+  - name: game_events
+    description: >
+      Cleaned atomic game-event records. Grain: one recorded game event.
+
+    columns:
+      - name: game_event_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: date
+        data_tests:
+          - not_null
+
+      - name: game_id
+        data_tests:
+          - not_null
+
+      - name: minute
+        data_tests:
+          - not_null
+
+      - name: type
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # GAME LINEUPS
+  # Grain: game_lineups_id
+  # ---------------------------------------------------------------------------
+
+  - name: game_lineups
+    description: >
+      Cleaned player lineup records. Grain: one source lineup record.
+
+    columns:
+      - name: game_lineups_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: date
+        data_tests:
+          - not_null
+
+      - name: game_id
+        data_tests:
+          - not_null
+
+      - name: player_id
+        data_tests:
+          - not_null
+
+      - name: club_id
+        data_tests:
+          - not_null
+
+      - name: type
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - starting_lineup
+                  - substitutes
+
+
+  # ---------------------------------------------------------------------------
+  # GAMES
+  # Grain: game_id
+  # ---------------------------------------------------------------------------
+
+  - name: games
+    description: >
+      Cleaned football match records. Grain: one game.
+
+    columns:
+      - name: game_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: competition_id
+        data_tests:
+          - not_null
+
+      - name: season
+        data_tests:
+          - not_null
+
+      - name: round
+        data_tests:
+          - not_null
+
+      - name: date
+        data_tests:
+          - not_null
+
+      - name: home_club_id
+        data_tests:
+          - not_null
+
+      - name: away_club_id
+        data_tests:
+          - not_null
+
+      - name: url
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # NATIONAL TEAMS
+  # Grain: national_team_id
+  # ---------------------------------------------------------------------------
+
+  - name: national_teams
+    description: >
+      Cleaned national-team snapshot. Grain: one national team.
+
+    columns:
+      - name: national_team_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: name
+        data_tests:
+          - not_null
+
+      - name: team_code
+        data_tests:
+          - not_null
+
+      - name: country_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('countries')
+                field: country_id
+
+      - name: country_name
+        data_tests:
+          - not_null
+
+      - name: country_code
+        data_tests:
+          - not_null
+
+      - name: confederation
+        data_tests:
+          - not_null
+
+      - name: last_season
+        data_tests:
+          - not_null
+
+      - name: url
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # PLAYER VALUATIONS
+  # Grain: (player_id, date)
+  # ---------------------------------------------------------------------------
+
+  - name: player_valuations
+    description: >
+      Historical player market valuations.
+      Grain: one player valuation on one date.
+
+    data_tests:
+      - unique:
+          arguments:
+            column_name: >
+              (
+                to_varchar(player_id)
+                || '|'
+                || to_varchar(date)
+              )
+
+    columns:
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('players')
+                field: player_id
+
+      - name: date
+        data_tests:
+          - not_null
+
+      - name: market_value_in_eur
+        data_tests:
+          - not_null
+
+      - name: current_club_name
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # PLAYERS
+  # Grain: player_id
+  # ---------------------------------------------------------------------------
+
+  - name: players
+    description: >
+      Cleaned player snapshot. Grain: one player.
+
+    columns:
+      - name: player_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: name
+        data_tests:
+          - not_null
+
+      - name: last_season
+        data_tests:
+          - not_null
+
+      - name: player_code
+        data_tests:
+          - not_null
+
+      - name: foot
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - left
+                  - right
+                  - both
+
+      - name: url
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # TRANSFERS
+  # Grain: (player_id, transfer_date, from_club_id, to_club_id)
+  # ---------------------------------------------------------------------------
+
+  - name: transfers
+    description: >
+      Cleaned player transfer records.
+      Grain: one player movement on a date between a source and destination
+      club combination.
+
+    data_tests:
+      - unique:
+          arguments:
+            column_name: >
+              (
+                to_varchar(player_id)
+                || '|'
+                || to_varchar(transfer_date)
+                || '|'
+                || coalesce(to_varchar(from_club_id), '<NULL>')
+                || '|'
+                || coalesce(to_varchar(to_club_id), '<NULL>')
+              )
+
+    columns:
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('players')
+                field: player_id
+
+      - name: transfer_date
+        data_tests:
+          - not_null
+
+      - name: transfer_season
+        data_tests:
+          - not_null

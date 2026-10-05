@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: "{{ target.database }}"
+    schema: BRONZE
+
+    tables:
+      - name: appearances
+      - name: club_games
+      - name: clubs
+      - name: competitions
+      - name: countries
+      - name: game_events
+      - name: game_lineups
+      - name: games
+      - name: national_teams
+      - name: player_valuations
+      - name: players
+      - name: transfers

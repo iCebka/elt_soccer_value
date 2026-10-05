@@ -1,0 +1,324 @@
+version: 2
+
+models:
+
+  # ---------------------------------------------------------------------------
+  # DIM_PLAYER
+  # Grain: player_id
+  # ---------------------------------------------------------------------------
+
+  - name: dim_player
+    description: >
+      Conformed player dimension. Grain: one analytically eligible player.
+
+    columns:
+      - name: player_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: name
+        data_tests:
+          - not_null
+
+      - name: date_of_birth
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # DIM_CLUB
+  # Grain: club_id
+  # ---------------------------------------------------------------------------
+
+  - name: dim_club
+    description: >
+      Conformed club dimension. Grain: one club from the current club snapshot.
+
+    columns:
+      - name: club_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: name
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # DIM_COMPETITION
+  # Grain: competition_id
+  # ---------------------------------------------------------------------------
+
+  - name: dim_competition
+    description: >
+      Conformed competition dimension. Grain: one competition.
+
+    columns:
+      - name: competition_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: name
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # DIM_DATE
+  # Grain: date_key
+  # ---------------------------------------------------------------------------
+
+  - name: dim_date
+    description: >
+      Continuous calendar dimension spanning the dates required by Gold facts.
+
+    columns:
+      - name: date_key
+        data_tests:
+          - not_null
+          - unique
+
+      - name: date
+        data_tests:
+          - not_null
+          - unique
+
+      - name: year
+        data_tests:
+          - not_null
+
+      - name: quarter
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4]
+                quote: false
+
+      - name: month
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+                quote: false
+
+      - name: month_name
+        data_tests:
+          - not_null
+
+      - name: day
+        data_tests:
+          - not_null
+
+      - name: day_of_week
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
+
+      - name: day_name
+        data_tests:
+          - not_null
+
+      - name: week_of_year
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # FACT_PLAYER_VALUATION
+  # Grain: (player_id, valuation_date)
+  # ---------------------------------------------------------------------------
+
+  - name: fact_player_valuation
+    description: >
+      Player market valuations. Grain: one eligible player on one valuation date.
+
+    data_tests:
+      - unique:
+          arguments:
+            column_name: >
+              (
+                to_varchar(player_id)
+                || '|'
+                || to_varchar(valuation_date)
+              )
+
+    columns:
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+
+      - name: valuation_date
+        data_tests:
+          - not_null
+
+      - name: valuation_date_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+      - name: market_value_in_eur
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # FACT_PLAYER_MATCH
+  # Grain: (game_id, player_id)
+  # ---------------------------------------------------------------------------
+
+  - name: fact_player_match
+    description: >
+      Player participation in a game. Grain: one eligible player in one game.
+
+    data_tests:
+      - unique:
+          arguments:
+            column_name: >
+              (
+                to_varchar(game_id)
+                || '|'
+                || to_varchar(player_id)
+              )
+
+    columns:
+      - name: appearance_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: game_id
+        data_tests:
+          - not_null
+
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+
+      - name: game_date
+        data_tests:
+          - not_null
+
+      - name: game_date_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+      - name: home_or_away
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - home
+                  - away
+
+
+  # ---------------------------------------------------------------------------
+  # FACT_MATCH_EVENT
+  # Grain: game_event_id
+  # ---------------------------------------------------------------------------
+
+  - name: fact_match_event
+    description: >
+      Atomic recorded match actions. Grain: one source game event.
+
+    columns:
+      - name: game_event_id
+        data_tests:
+          - not_null
+          - unique
+
+      - name: game_id
+        data_tests:
+          - not_null
+
+      - name: event_date
+        data_tests:
+          - not_null
+
+      - name: event_date_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+      - name: minute
+        data_tests:
+          - not_null
+
+      - name: event_type
+        data_tests:
+          - not_null
+
+
+  # ---------------------------------------------------------------------------
+  # FACT_TRANSFER
+  # Grain: (player_id, transfer_date, from_club_id, to_club_id)
+  # ---------------------------------------------------------------------------
+
+  - name: fact_transfer
+    description: >
+      Player transfer movements. Grain: one eligible player transfer between
+      source and destination club identifiers on a transfer date.
+
+    data_tests:
+      - unique:
+          arguments:
+            column_name: >
+              (
+                to_varchar(player_id)
+                || '|'
+                || to_varchar(transfer_date)
+                || '|'
+                || coalesce(to_varchar(from_club_id), '<NULL>')
+                || '|'
+                || coalesce(to_varchar(to_club_id), '<NULL>')
+              )
+
+    columns:
+      - name: player_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_player')
+                field: player_id
+
+      - name: transfer_date
+        data_tests:
+          - not_null
+
+      - name: transfer_date_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+
+      - name: transfer_season
+        data_tests:
+          - not_null

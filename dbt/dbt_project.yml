@@ -1,53 +1,25 @@
-name: elt_soccer_value
-version: 1.0.0
+name: "football"
+version: "1.0.0"
 config-version: 2
 
-profile: elt_soccer_value
-require-dbt-version: [">=1.12.0", "<1.13.0"]
+profile: "football"
 
 model-paths: ["models"]
-macro-paths: ["macros"]
 test-paths: ["tests"]
-analysis-paths: ["analyses"]
-seed-paths: ["seeds"]
-snapshot-paths: ["snapshots"]
-target-path: "target"
-clean-targets: ["target", "dbt_packages"]
+macro-paths: ["macros"]
 
-flags:
-  send_anonymous_usage_stats: false
-
-vars:
-  # Empty means: resolve one latest SUCCESS per source into the materialized
-  # manifest table. A complete fixed mapping can be passed with --vars.
-  transfermarkt_source_manifest: {}
+clean-targets:
+  - "target"
+  - "dbt_packages"
 
 models:
-  elt_soccer_value:
-    +tags: ["transfermarkt_silver"]
-    staging:
-      +materialized: view
-      +schema: "{{ env_var('SNOWFLAKE_STAGING_SCHEMA', 'STAGING') }}"
-      +tags: ["silver_stage_2"]
+  football:
     silver:
       +materialized: table
-      +schema: "{{ env_var('SNOWFLAKE_SILVER_SCHEMA', 'SILVER') }}"
-      +tags: ["silver_stage_2"]
-      intermediate:
-        +materialized: ephemeral
-      final:
-        +tags: ["silver_stage_3"]
+      +schema: SILVER
+      +tags: ["silver"]
 
-seeds:
-  elt_soccer_value:
-    +tags: ["transfermarkt_silver"]
-    transfermarkt:
-      +schema: "{{ env_var('SNOWFLAKE_STAGING_SCHEMA', 'STAGING') }}"
-      +tags: ["silver_stage_2", "transfermarkt_aliases"]
-      +quote_columns: false
-      tm_country_name_aliases:
-        +tags: ["silver_stage_3", "country_resolution"]
-
-data_tests:
-  elt_soccer_value:
-    +tags: ["silver_stage_2", "transfermarkt_silver"]
+    gold:
+      +materialized: table
+      +schema: GOLD
+      +tags: ["gold"]
