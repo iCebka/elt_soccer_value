@@ -373,7 +373,7 @@ ORDER BY event_date, event_type, event_id;
 ├── spark/
 │   └── obt_football_events.py     # Proyección, contexto, validaciones y escritura
 ├── docs/
-│   ├── CD_PSet_2-1.pdf            # Requisitos del enunciado
+│   ├── PSet2_memo_silva_santellan_almeida_torres.pdf            # Documento tecnico
 │   ├── decisions.md              # Reglas Silver y evidencia del análisis de calidad
 │   ├── final-gold.md             # Contratos del modelo dimensional
 │   ├── obt_decisions.md          # Esquema de eventos e identidad determinista
